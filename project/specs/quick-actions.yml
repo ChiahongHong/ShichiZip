@@ -34,7 +34,6 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: ee.dawn.ShichiZip.RevealInFileManagerAction
         PRODUCT_NAME: ShichiZipRevealInFileManagerAction
         SHICHIZIP_QUICK_ACTION_DISPLAY_NAME: "SZ: Reveal in File Manager"
-        SHICHIZIP_QUICK_ACTION_LABEL: "SZ: Reveal in File Manager"
     info:
       path: ../generated/plists/ShichiZipRevealInFileManagerAction-Info.plist
       properties: &reveal_quick_action_info
@@ -54,7 +53,6 @@ targets:
             <<: &quick_action_extension_attributes_common
               NSExtensionServiceAllowsFinderPreviewItem: true
               NSExtensionServiceFinderPreviewIconName: NSActionTemplate
-              NSExtensionServiceFinderPreviewLabel: $(SHICHIZIP_QUICK_ACTION_LABEL)
               NSExtensionServiceRoleType: NSExtensionServiceRoleTypeViewer
             NSExtensionActivationRule: >-
               SUBQUERY(extensionItems, $extensionItem, $extensionItem.attachments.@count >= 1 &&
@@ -81,7 +79,6 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: ee.dawn.ShichiZip.OpenInShichiZipAction
         PRODUCT_NAME: ShichiZipOpenInShichiZipAction
         SHICHIZIP_QUICK_ACTION_DISPLAY_NAME: "SZ: Open in ShichiZip"
-        SHICHIZIP_QUICK_ACTION_LABEL: "SZ: Open in ShichiZip"
     info:
       path: ../generated/plists/ShichiZipOpenInShichiZipAction-Info.plist
       properties: &open_quick_action_info
@@ -113,7 +110,6 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: ee.dawn.ShichiZip.SmartQuickExtractAction
         PRODUCT_NAME: ShichiZipSmartQuickExtractAction
         SHICHIZIP_QUICK_ACTION_DISPLAY_NAME: "SZ: Smart Quick Extract"
-        SHICHIZIP_QUICK_ACTION_LABEL: "SZ: Smart Quick Extract"
     info:
       path: ../generated/plists/ShichiZipSmartQuickExtractAction-Info.plist
       properties: &smart_extract_quick_action_info
@@ -219,7 +215,6 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: ee.dawn.ShichiZipZS.RevealInFileManagerAction
         PRODUCT_NAME: ShichiZipZSRevealInFileManagerAction
         SHICHIZIP_QUICK_ACTION_DISPLAY_NAME: "SZ ZS: Reveal in File Manager"
-        SHICHIZIP_QUICK_ACTION_LABEL: "SZ ZS: Reveal in File Manager"
     info:
       path: ../generated/plists/ShichiZipZSRevealInFileManagerAction-Info.plist
       properties: *reveal_quick_action_info
@@ -241,7 +236,6 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: ee.dawn.ShichiZipZS.OpenInShichiZipAction
         PRODUCT_NAME: ShichiZipZSOpenInShichiZipAction
         SHICHIZIP_QUICK_ACTION_DISPLAY_NAME: "SZ ZS: Open in ShichiZip ZS"
-        SHICHIZIP_QUICK_ACTION_LABEL: "SZ ZS: Open in ShichiZip ZS"
     info:
       path: ../generated/plists/ShichiZipZSOpenInShichiZipAction-Info.plist
       properties: *open_quick_action_info
@@ -263,7 +257,6 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: ee.dawn.ShichiZipZS.SmartQuickExtractAction
         PRODUCT_NAME: ShichiZipZSSmartQuickExtractAction
         SHICHIZIP_QUICK_ACTION_DISPLAY_NAME: "SZ ZS: Smart Quick Extract"
-        SHICHIZIP_QUICK_ACTION_LABEL: "SZ ZS: Smart Quick Extract"
     info:
       path: ../generated/plists/ShichiZipZSSmartQuickExtractAction-Info.plist
       properties: *smart_extract_quick_action_info
