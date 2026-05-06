@@ -133,12 +133,19 @@ class ShichiZipUITestCase: XCTestCase {
     /// Returns the URL of the created archive.
     func createTestArchive(named name: String,
                            sourceFileNames: [String],
-                           in directory: URL) throws -> URL
+                           in directory: URL,
+                           password: String? = nil) throws -> URL
     {
         let archiveURL = directory.appendingPathComponent("\(name).zip")
         // -q: quiet, -X: omit platform-specific extras, --: end options.
+        var arguments = ["-q", "-X"]
+        if let password {
+            arguments += ["-P", password]
+        }
+        arguments += [archiveURL.path, "--"] + sourceFileNames
+
         try runUITestCLITool("/usr/bin/zip",
-                             arguments: ["-q", "-X", archiveURL.path, "--"] + sourceFileNames,
+                             arguments: arguments,
                              currentDirectoryURL: directory)
         return archiveURL
     }
@@ -169,7 +176,8 @@ class ShichiZipUITestCase: XCTestCase {
     ///
     /// Returns `(archiveURL, containingDirectory)`.
     func makeTestArchive(named name: String,
-                         payloads: [String: String] = ["payload.txt": "test content"]) throws -> (archive: URL, directory: URL)
+                         payloads: [String: String] = ["payload.txt": "test content"],
+                         password: String? = nil) throws -> (archive: URL, directory: URL)
     {
         let tempDir = try makeTemporaryDirectory(named: name)
         for (fileName, content) in payloads {
@@ -178,7 +186,8 @@ class ShichiZipUITestCase: XCTestCase {
 
         let archiveURL = try createTestArchive(named: name,
                                                sourceFileNames: Array(payloads.keys),
-                                               in: tempDir)
+                                               in: tempDir,
+                                               password: password)
 
         // Remove the loose source files so only the archive is listed.
         for fileName in payloads.keys {

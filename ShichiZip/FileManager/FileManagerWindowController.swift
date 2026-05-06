@@ -1364,7 +1364,7 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
         return true
     }
 
-    @objc func copyClipboardItems(_ sender: Any?) {
+    @objc func copy(_ sender: Any?) {
         if dispatchTextEditingActionIfPossible(#selector(NSText.copy(_:)), sender: sender) {
             return
         }
@@ -1377,7 +1377,7 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
         pasteboard.writeObjects(urls.map { $0 as NSURL })
     }
 
-    @objc func pasteClipboardItems(_ sender: Any?) {
+    @objc func paste(_ sender: Any?) {
         if dispatchTextEditingActionIfPossible(#selector(NSText.paste(_:)), sender: sender) {
             return
         }
@@ -1430,7 +1430,7 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
         }
     }
 
-    @objc func selectAllItems(_ sender: Any?) {
+    override func selectAll(_ sender: Any?) {
         if dispatchTextEditingActionIfPossible(#selector(NSText.selectAll(_:)), sender: sender) {
             return
         }
@@ -1834,13 +1834,13 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
             return activePane.canCalculateSelectionHashes()
         case #selector(goUpOneLevel(_:)):
             return activePane.canGoUp()
-        case #selector(copyClipboardItems(_:)):
+        case #selector(NSText.copy(_:)):
             return firstResponderSupportsTextEditingAction(#selector(NSText.copy(_:))) ||
                 canCopyFileSelectionToClipboard()
-        case #selector(pasteClipboardItems(_:)):
+        case #selector(NSText.paste(_:)):
             return firstResponderSupportsTextEditingAction(#selector(NSText.paste(_:))) ||
                 canPasteClipboardFilesIntoActivePane()
-        case #selector(selectAllItems(_:)):
+        case #selector(NSText.selectAll(_:)):
             return firstResponderSupportsTextEditingAction(#selector(NSText.selectAll(_:))) ||
                 activePane.canSelectVisibleItems()
         case #selector(invertSelection(_:)):
