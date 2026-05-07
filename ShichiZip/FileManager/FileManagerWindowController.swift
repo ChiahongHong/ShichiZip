@@ -1075,152 +1075,20 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
         }
     }
 
+    private var commandValidationContext: FileManagerCommandValidationContext {
+        FileManagerCommandValidationContext(activePane: activePane,
+                                            isDualPane: isDualPane,
+                                            window: window)
+    }
+
     func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
-        switch item.action {
-        case #selector(openSelectedItem(_:)):
-            return activePane.canOpenSelection()
-        case #selector(openSelectedItemInside(_:)),
-             #selector(openSelectedItemInsideWildcard(_:)),
-             #selector(openSelectedItemInsideParser(_:)):
-            return activePane.canOpenSelectionInside()
-        case #selector(openSelectedItemOutside(_:)):
-            return activePane.canOpenSelectionOutside()
-        case #selector(addToArchive(_:)):
-            return activePane.canAddSelectedItemsToArchive()
-        case #selector(extractArchive(_:)):
-            return activePane.canExtractSelectionOrArchive()
-        case #selector(extractHere(_:)):
-            return activePane.canExtractSelectionOrArchive()
-        case #selector(testArchive(_:)):
-            return activePane.canTestArchiveSelection()
-        case #selector(copyFiles(_:)):
-            return activePane.canCopySelection()
-        case #selector(moveFiles(_:)):
-            return activePane.canMoveSelection()
-        case #selector(renameSelection(_:)):
-            return activePane.canRenameSelection()
-        case #selector(createFolder(_:)):
-            return activePane.canCreateFolderHere()
-        case #selector(createFile(_:)):
-            return activePane.canCreateFileHere()
-        case #selector(deleteFiles(_:)):
-            return activePane.canDeleteSelection()
-        case #selector(showProperties(_:)):
-            return activePane.canShowSelectedItemProperties()
-        case #selector(showCRC32Hash(_:)),
-             #selector(showAllHashes(_:)),
-             #selector(showCRC64Hash(_:)),
-             #selector(showXXH64Hash(_:)),
-             #selector(showMD5Hash(_:)),
-             #selector(showSHA1Hash(_:)),
-             #selector(showSHA256Hash(_:)),
-             #selector(showSHA384Hash(_:)),
-             #selector(showSHA512Hash(_:)),
-             #selector(showSHA3256Hash(_:)),
-             #selector(showBLAKE2spHash(_:)):
-            return activePane.canCalculateSelectionHashes()
-        case #selector(goUpOneLevel(_:)):
-            return activePane.canGoUp()
-        case #selector(NSText.copy(_:)):
-            return FileManagerTextEditingActionDispatcher.firstResponder(in: window,
-                                                                         supports: #selector(NSText.copy(_:))) ||
-                FileManagerClipboardSupport.canCopySelection(from: activePane)
-        case #selector(NSText.paste(_:)):
-            return FileManagerTextEditingActionDispatcher.firstResponder(in: window,
-                                                                         supports: #selector(NSText.paste(_:))) ||
-                FileManagerClipboardSupport.canPasteFiles(FileManagerClipboard.fileURLs(),
-                                                          into: activePane)
-        case #selector(NSText.selectAll(_:)):
-            return FileManagerTextEditingActionDispatcher.firstResponder(in: window,
-                                                                         supports: #selector(NSText.selectAll(_:))) ||
-                activePane.canSelectVisibleItems()
-        case #selector(invertSelection(_:)):
-            return activePane.canSelectVisibleItems()
-        case #selector(deselectAllItems(_:)):
-            return activePane.canDeselectSelection()
-        case #selector(refreshActivePane(_:)),
-             #selector(sortByName(_:)),
-             #selector(sortByType(_:)),
-             #selector(sortBySize(_:)),
-             #selector(sortByModifiedDate(_:)),
-             #selector(sortByCreatedDate(_:)):
-            return true
-        case #selector(closeDirectory(_:)):
-            return !activePane.isSuspended
-        case #selector(showTimestampDay(_:)),
-             #selector(showTimestampMinute(_:)),
-             #selector(showTimestampSecond(_:)),
-             #selector(showTimestampNTFS(_:)),
-             #selector(showTimestampNanoseconds(_:)),
-             #selector(toggleTimestampUTC(_:)),
-             #selector(toggleAutoRefresh(_:)):
-            return true
-        case #selector(openRootFolder(_:)):
-            return true
-        case #selector(showFoldersHistory(_:)):
-            return activePane.canShowFoldersHistory()
-        case #selector(toggleArchiveToolbar(_:)),
-             #selector(toggleStandardToolbar(_:)),
-             #selector(toggleToolbarButtonText(_:)),
-             #selector(toggleUnifiedToolbarStyle(_:)):
-            return true
-        case #selector(openFavoriteSlot(_:)):
-            guard let menuItem = item as? NSMenuItem else { return false }
-            return FileManagerFavoriteStore.url(for: menuItem.tag) != nil
-        case #selector(saveFavoriteSlot(_:)):
-            return true
-        case #selector(toggleDualPane(_:)):
-            return true
-        case #selector(switchPanes(_:)):
-            return isDualPane
-        default:
-            return true
-        }
+        FileManagerCommandValidator.validate(item,
+                                             context: commandValidationContext)
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        let isEnabled = validateUserInterfaceItem(menuItem)
-
-        switch menuItem.action {
-        case #selector(toggleDualPane(_:)):
-            menuItem.state = isDualPane ? .on : .off
-        case #selector(sortByName(_:)):
-            menuItem.state = activePane.primarySortKey == "name" ? .on : .off
-        case #selector(sortByType(_:)):
-            menuItem.state = activePane.primarySortKey == "type" ? .on : .off
-        case #selector(sortBySize(_:)):
-            menuItem.state = activePane.primarySortKey == "size" ? .on : .off
-        case #selector(sortByModifiedDate(_:)):
-            menuItem.state = activePane.primarySortKey == "modified" ? .on : .off
-        case #selector(sortByCreatedDate(_:)):
-            menuItem.state = activePane.primarySortKey == "created" ? .on : .off
-        case #selector(showTimestampDay(_:)):
-            menuItem.state = FileManagerViewPreferences.timestampDisplayLevel == .day ? .on : .off
-        case #selector(showTimestampMinute(_:)):
-            menuItem.state = FileManagerViewPreferences.timestampDisplayLevel == .minute ? .on : .off
-        case #selector(showTimestampSecond(_:)):
-            menuItem.state = FileManagerViewPreferences.timestampDisplayLevel == .second ? .on : .off
-        case #selector(showTimestampNTFS(_:)):
-            menuItem.state = FileManagerViewPreferences.timestampDisplayLevel == .ntfs ? .on : .off
-        case #selector(showTimestampNanoseconds(_:)):
-            menuItem.state = FileManagerViewPreferences.timestampDisplayLevel == .nanoseconds ? .on : .off
-        case #selector(toggleTimestampUTC(_:)):
-            menuItem.state = FileManagerViewPreferences.usesUTCTimestamps ? .on : .off
-        case #selector(toggleAutoRefresh(_:)):
-            menuItem.state = FileManagerViewPreferences.autoRefreshEnabled ? .on : .off
-        case #selector(toggleArchiveToolbar(_:)):
-            menuItem.state = FileManagerToolbarPreferences.showsArchiveToolbar ? .on : .off
-        case #selector(toggleStandardToolbar(_:)):
-            menuItem.state = FileManagerToolbarPreferences.showsStandardToolbar ? .on : .off
-        case #selector(toggleToolbarButtonText(_:)):
-            menuItem.state = FileManagerToolbarPreferences.showsButtonText ? .on : .off
-        case #selector(toggleUnifiedToolbarStyle(_:)):
-            menuItem.state = FileManagerToolbarPreferences.style == .unified ? .on : .off
-        default:
-            menuItem.state = .off
-        }
-
-        return isEnabled
+        FileManagerCommandValidator.validate(menuItem,
+                                             context: commandValidationContext)
     }
 
     private func suggestedArchiveAddSourceDirectory(for targetPane: FileManagerPaneController) -> URL {
