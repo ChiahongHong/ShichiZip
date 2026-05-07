@@ -506,6 +506,7 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
     private weak var quickLookPreviewSourcePane: FileManagerPaneController?
     private var quickLookPreviewTask: Task<Void, Never>?
     private var quickLookPreviewGeneration: UInt64 = 0
+    private weak var windowCoordinator: (any FileManagerWindowCoordinating)?
 
     var onWindowWillClose: ((FileManagerWindowController) -> Void)?
 
@@ -513,7 +514,11 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
         isDualPane ? [leftPane, rightPane] : [leftPane]
     }
 
-    convenience init() {
+    func archiveCoordinationSnapshots() -> [FileManagerNestedArchiveOpenSnapshot] {
+        fileManagerPaneControllersForArchiveCoordination().flatMap { $0.archiveCoordinationSnapshots() }
+    }
+
+    convenience init(windowCoordinator: (any FileManagerWindowCoordinating)? = nil) {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1000, height: 650),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -524,6 +529,7 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
         window.minSize = NSSize(width: 600, height: 400)
         window.center()
         self.init(window: window)
+        self.windowCoordinator = windowCoordinator
         self.window?.delegate = self
         setupUI()
         setupToolbar()
@@ -585,10 +591,12 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
 
         leftPane = FileManagerPaneController()
         leftPane.delegate = self
+        leftPane.archiveCoordinationProvider = windowCoordinator
         leftPane.view.setAccessibilityIdentifier("fileManager.leftPane")
 
         rightPane = FileManagerPaneController()
         rightPane.delegate = self
+        rightPane.archiveCoordinationProvider = windowCoordinator
         rightPane.view.setAccessibilityIdentifier("fileManager.rightPane")
 
         splitView.addArrangedSubview(leftPane.view)
@@ -2463,7 +2471,7 @@ protocol FileManagerPaneDelegate: AnyObject {
 
 extension FileManagerWindowController: FileManagerPaneDelegate {
     func paneDidRequestOpenArchiveInNewWindow(_ url: URL) {
-        (NSApp.delegate as? AppDelegate)?.openArchiveInNewFileManager(url)
+        windowCoordinator?.openArchiveInNewFileManager(url)
     }
 
     func paneDidBecomeActive(_ pane: FileManagerPaneController) {

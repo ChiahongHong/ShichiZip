@@ -41,6 +41,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     // MARK: - Properties
 
     weak var delegate: FileManagerPaneDelegate?
+    weak var archiveCoordinationProvider: (any FileManagerArchiveCoordinationProviding)?
 
     private var locationIconView: NSImageView!
     private var pathField: NSTextField!
@@ -2453,18 +2454,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     private func allVisibleArchiveCoordinationSnapshots() -> [FileManagerNestedArchiveOpenSnapshot] {
-        guard let appDelegate = NSApp.delegate as? AppDelegate else {
-            return archiveCoordinationSnapshots()
-        }
-
-        var snapshots: [FileManagerNestedArchiveOpenSnapshot] = []
-        for windowController in appDelegate.activeFileManagerWindowControllersForArchiveCoordination() {
-            for paneController in windowController.fileManagerPaneControllersForArchiveCoordination() {
-                snapshots.append(contentsOf: paneController.archiveCoordinationSnapshots())
-            }
-        }
-
-        return snapshots
+        archiveCoordinationProvider?.archiveCoordinationSnapshots() ?? archiveCoordinationSnapshots()
     }
 
     private var coordinatedArchiveLocation: FileManagerCoordinatedArchiveLocation? {
@@ -4870,7 +4860,7 @@ extension FileManagerPaneController {
 // MARK: - NSMenuDelegate (auto-select row on right-click)
 
 extension FileManagerPaneController {
-    private func archiveCoordinationSnapshots() -> [FileManagerNestedArchiveOpenSnapshot] {
+    func archiveCoordinationSnapshots() -> [FileManagerNestedArchiveOpenSnapshot] {
         archiveStack.map { level in
             let isDirty = level.nestedWriteBackInfo.flatMap { writeBackInfo in
                 FileManagerArchiveFileFingerprint.captureIfPossible(for: URL(fileURLWithPath: level.archivePath).standardizedFileURL)
