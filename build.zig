@@ -682,6 +682,18 @@ fn buildSfx(
     // Windows GUI subsystem (not console)
     sfx.subsystem = .windows;
 
+    // Bridge upstream's <CommCtrl.h> to Zig/MinGW's lowercase header on case-sensitive filesystems.
+    const sfx_header_shims = b.addWriteFiles();
+    _ = sfx_header_shims.add(
+        "CommCtrl.h",
+        "#ifndef SHICHIZIP_WINDOWS_CASE_COMMCTRL_H\n" ++
+            "#define SHICHIZIP_WINDOWS_CASE_COMMCTRL_H\n" ++
+            "#include_next <commctrl.h>\n" ++
+            "#endif\n",
+    );
+    const sfx_header_shim_dir = sfx_header_shims.getDirectory();
+    root_module.addIncludePath(sfx_header_shim_dir);
+
     // --- Flags ---
     const sevenz_include = std.fmt.allocPrint(b.allocator, "-I{s}", .{sevenz_root}) catch @panic("OOM");
 
@@ -868,6 +880,7 @@ fn buildSfx(
     root_module.addWin32ResourceFile(.{
         .file = b.path(std.fmt.allocPrint(b.allocator, "{s}/CPP/7zip/Bundles/SFXWin/resource.rc", .{sevenz_root}) catch @panic("OOM")),
         .include_paths = &.{
+            sfx_header_shim_dir,
             b.path(std.fmt.allocPrint(b.allocator, "{s}/CPP/7zip", .{sevenz_root}) catch @panic("OOM")),
             b.path(std.fmt.allocPrint(b.allocator, "{s}/CPP/7zip/Bundles/SFXWin", .{sevenz_root}) catch @panic("OOM")),
             b.path(std.fmt.allocPrint(b.allocator, "{s}/CPP/7zip/UI/GUI", .{sevenz_root}) catch @panic("OOM")),
