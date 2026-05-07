@@ -506,19 +506,19 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
     private weak var quickLookPreviewSourcePane: FileManagerPaneController?
     private var quickLookPreviewTask: Task<Void, Never>?
     private var quickLookPreviewGeneration: UInt64 = 0
-    private weak var windowCoordinator: (any FileManagerWindowCoordinating)?
+    private let windowCoordinator: any FileManagerWindowCoordinating
 
     var onWindowWillClose: ((FileManagerWindowController) -> Void)?
 
-    func fileManagerPaneControllersForArchiveCoordination() -> [FileManagerPaneController] {
+    private var archiveCoordinationPaneControllers: [FileManagerPaneController] {
         isDualPane ? [leftPane, rightPane] : [leftPane]
     }
 
     func archiveCoordinationSnapshots() -> [FileManagerNestedArchiveOpenSnapshot] {
-        fileManagerPaneControllersForArchiveCoordination().flatMap { $0.archiveCoordinationSnapshots() }
+        archiveCoordinationPaneControllers.flatMap { $0.archiveCoordinationSnapshots() }
     }
 
-    convenience init(windowCoordinator: (any FileManagerWindowCoordinating)? = nil) {
+    init(windowCoordinator: any FileManagerWindowCoordinating) {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1000, height: 650),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -528,9 +528,9 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
         window.title = AppBuildInfo.appDisplayName()
         window.minSize = NSSize(width: 600, height: 400)
         window.center()
-        self.init(window: window)
         self.windowCoordinator = windowCoordinator
-        self.window?.delegate = self
+        super.init(window: window)
+        window.delegate = self
         setupUI()
         setupToolbar()
         observeViewPreferences()
@@ -538,6 +538,11 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
         trackedActivePane = leftPane
         self.window?.initialFirstResponder = leftPane.preferredInitialFirstResponder
         self.window?.makeFirstResponder(leftPane.preferredInitialFirstResponder)
+    }
+
+    @available(*, unavailable)
+    required init?(coder _: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 
     isolated deinit {
@@ -2471,7 +2476,7 @@ protocol FileManagerPaneDelegate: AnyObject {
 
 extension FileManagerWindowController: FileManagerPaneDelegate {
     func paneDidRequestOpenArchiveInNewWindow(_ url: URL) {
-        windowCoordinator?.openArchiveInNewFileManager(url)
+        windowCoordinator.openArchiveInNewFileManager(url)
     }
 
     func paneDidBecomeActive(_ pane: FileManagerPaneController) {
