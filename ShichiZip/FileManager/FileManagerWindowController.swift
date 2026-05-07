@@ -692,126 +692,44 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
         presentSelectionHash(.blake2sp)
     }
 
-    private func firstResponderSupportsTextEditingAction(_ action: Selector) -> Bool {
-        guard let firstResponder = window?.firstResponder as? NSResponder,
-              firstResponder is NSTextView
-        else {
-            return false
-        }
-
-        return firstResponder.responds(to: action)
-    }
-
-    @discardableResult
-    private func dispatchTextEditingActionIfPossible(_ action: Selector,
-                                                     sender: Any?) -> Bool
-    {
-        guard firstResponderSupportsTextEditingAction(action) else {
-            return false
-        }
-
-        return NSApp.sendAction(action, to: nil, from: sender)
-    }
-
-    private func clipboardFileURLs() -> [URL] {
-        let options: [NSPasteboard.ReadingOptionKey: Any] = [
-            .urlReadingFileURLsOnly: true,
-        ]
-
-        guard let urls = NSPasteboard.general.readObjects(forClasses: [NSURL.self],
-                                                          options: options) as? [URL]
-        else {
-            return []
-        }
-
-        return urls
-            .filter(\.isFileURL)
-            .map(\.standardizedFileURL)
-    }
-
-    private func canCopyFileSelectionToClipboard() -> Bool {
-        !activePane.isVirtualLocation && !activePane.selectedFileURLs().isEmpty
-    }
-
-    private func canPasteClipboardFilesIntoActivePane() -> Bool {
-        let pane = activePane
-        guard !clipboardFileURLs().isEmpty else { return false }
-
-        if pane.isVirtualLocation {
-            return pane.currentArchiveMutationTarget() != nil
-        }
-
-        return true
-    }
-
     @objc func copy(_ sender: Any?) {
-        if dispatchTextEditingActionIfPossible(#selector(NSText.copy(_:)), sender: sender) {
+        if FileManagerTextEditingActionDispatcher.dispatchIfPossible(#selector(NSText.copy(_:)),
+                                                                     sender: sender,
+                                                                     window: window)
+        {
             return
         }
 
-        let urls = activePane.selectedFileURLs()
-        guard !activePane.isVirtualLocation, !urls.isEmpty else { return }
-
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.writeObjects(urls.map { $0 as NSURL })
+        FileManagerClipboardSupport.copySelection(from: activePane)
     }
 
     @objc func paste(_ sender: Any?) {
-        if dispatchTextEditingActionIfPossible(#selector(NSText.paste(_:)), sender: sender) {
+        if FileManagerTextEditingActionDispatcher.dispatchIfPossible(#selector(NSText.paste(_:)),
+                                                                     sender: sender,
+                                                                     window: window)
+        {
             return
         }
 
         let pane = activePane
-        let sourceURLs = clipboardFileURLs()
-        guard !sourceURLs.isEmpty else { return }
-
-        if pane.isVirtualLocation {
-            guard let target = pane.currentArchiveMutationTarget() else {
-                pane.showReadOnlyArchiveMutationAlert(action: SZL10n.string("app.fileManager.action.addingFilesToArchive"))
-                return
-            }
-
-            pane.beginConfirmedArchiveTransfer(sourceURLs,
-                                               to: target,
-                                               operation: .copy,
-                                               sourcePane: nil,
+        FileManagerClipboardSupport.pasteFiles(FileManagerClipboard.fileURLs(),
+                                               into: pane,
                                                parentWindow: window,
-                                               operationTitle: SZL10n.string("app.progress.pasting"))
-            return
-        }
-
-        let destinationURL = pane.currentDirectoryURL.standardizedFileURL
-        guard pane.canTransferFileSystemItemURLs(sourceURLs,
-                                                 to: destinationURL,
-                                                 operation: .copy,
-                                                 presentingIn: window)
-        else {
-            return
-        }
-
-        Task { @MainActor [weak self, weak pane] in
-            guard let self, let pane, let parentWindow = window else { return }
-            do {
-                try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("app.progress.pasting"),
-                                                     parentWindow: parentWindow)
-                { session in
-                    try pane.transferFileSystemItemURLs(sourceURLs,
-                                                        to: destinationURL,
-                                                        operation: .copy,
-                                                        session: session)
-                }
-                refreshAfterFilesystemTransfer(from: pane,
-                                               to: destinationURL,
-                                               operation: .copy)
-            } catch {
-                showErrorAlert(error)
-            }
-        }
+                                               refreshAfterFilesystemTransfer: { [weak self] pane, destinationURL, operation in
+                                                   self?.refreshAfterFilesystemTransfer(from: pane,
+                                                                                        to: destinationURL,
+                                                                                        operation: operation)
+                                               },
+                                               showError: { [weak self] error in
+                                                   self?.showErrorAlert(error)
+                                               })
     }
 
     override func selectAll(_ sender: Any?) {
-        if dispatchTextEditingActionIfPossible(#selector(NSText.selectAll(_:)), sender: sender) {
+        if FileManagerTextEditingActionDispatcher.dispatchIfPossible(#selector(NSText.selectAll(_:)),
+                                                                     sender: sender,
+                                                                     window: window)
+        {
             return
         }
         activePane.selectAllItems()
@@ -1204,13 +1122,17 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
         case #selector(goUpOneLevel(_:)):
             return activePane.canGoUp()
         case #selector(NSText.copy(_:)):
-            return firstResponderSupportsTextEditingAction(#selector(NSText.copy(_:))) ||
-                canCopyFileSelectionToClipboard()
+            return FileManagerTextEditingActionDispatcher.firstResponder(in: window,
+                                                                         supports: #selector(NSText.copy(_:))) ||
+                FileManagerClipboardSupport.canCopySelection(from: activePane)
         case #selector(NSText.paste(_:)):
-            return firstResponderSupportsTextEditingAction(#selector(NSText.paste(_:))) ||
-                canPasteClipboardFilesIntoActivePane()
+            return FileManagerTextEditingActionDispatcher.firstResponder(in: window,
+                                                                         supports: #selector(NSText.paste(_:))) ||
+                FileManagerClipboardSupport.canPasteFiles(FileManagerClipboard.fileURLs(),
+                                                          into: activePane)
         case #selector(NSText.selectAll(_:)):
-            return firstResponderSupportsTextEditingAction(#selector(NSText.selectAll(_:))) ||
+            return FileManagerTextEditingActionDispatcher.firstResponder(in: window,
+                                                                         supports: #selector(NSText.selectAll(_:))) ||
                 activePane.canSelectVisibleItems()
         case #selector(invertSelection(_:)):
             return activePane.canSelectVisibleItems()
