@@ -1225,20 +1225,24 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     func selectedOrDisplayedArchiveEntriesForExtraction() -> [ArchiveItem] {
-        guard let level = archiveStack.last else { return [] }
+        guard let context = currentArchiveExtractionContext else { return [] }
 
-        let indices = Set(archiveEntryIndices(for: archiveItemsForSelectionOrDisplayedItems()).map(\.intValue))
-        return level.allEntries.filter { indices.contains($0.index) }
+        let indices = Set(FileManagerArchiveExtraction.entryIndices(for: archiveItemsForSelectionOrDisplayedItems(),
+                                                                    allEntries: context.allEntries).map(\.intValue))
+        return context.allEntries.filter { indices.contains($0.index) }
     }
 
     func pathPrefixToStripForCurrentExtraction(destinationURL: URL,
                                                pathMode: SZPathMode,
                                                eliminateDuplicates: Bool) -> String?
     {
-        archivePathPrefixToStrip(for: archiveItemsForSelectionOrDisplayedItems(),
-                                 destinationURL: destinationURL,
-                                 pathMode: pathMode,
-                                 eliminateDuplicates: eliminateDuplicates)
+        guard let context = currentArchiveExtractionContext else { return nil }
+
+        return FileManagerArchiveExtraction.pathPrefixToStrip(for: archiveItemsForSelectionOrDisplayedItems(),
+                                                              context: context,
+                                                              destinationURL: destinationURL,
+                                                              pathMode: pathMode,
+                                                              eliminateDuplicates: eliminateDuplicates)
     }
 
     func selectedItemNames(limit: Int? = nil) -> [String] {
@@ -2115,61 +2119,24 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                                 inheritDownloadedFileQuarantine: inheritDownloadedFileQuarantine)
     }
 
-    /// Captures all @MainActor state needed for extraction so the actual bridge call
-    /// can run on a background thread without accessing isolated properties.
-    struct PreparedExtraction: @unchecked Sendable {
-        let archive: SZArchive
-        let entryIndices: [NSNumber]
-        let destinationPath: String
-        let settings: SZExtractionSettings
-    }
-
     func prepareExtraction(to destinationURL: URL,
                            overwriteMode: SZOverwriteMode = .ask,
                            pathMode: SZPathMode = .currentPaths,
                            password: String? = nil,
                            preserveNtSecurityInfo: Bool = false,
                            eliminateDuplicates: Bool = false,
-                           inheritDownloadedFileQuarantine: Bool = SZSettings.bool(.inheritDownloadedFileQuarantine)) throws -> PreparedExtraction
+                           inheritDownloadedFileQuarantine: Bool = SZSettings.bool(.inheritDownloadedFileQuarantine)) throws -> FileManagerPreparedExtraction
     {
         let itemsToExtract = archiveItemsForSelectionOrDisplayedItems()
-        guard !itemsToExtract.isEmpty else {
-            throw paneOperationError(SZL10n.string("app.fileManager.error.noArchiveItemsToExtract"))
-        }
-
-        guard let level = archiveStack.last else {
-            throw paneOperationError(SZL10n.string("app.fileManager.error.noArchiveOpen"))
-        }
-
-        let indices = archiveEntryIndices(for: itemsToExtract)
-        guard !indices.isEmpty else {
-            throw paneOperationError(SZL10n.string("app.fileManager.error.cannotExtractSelected"))
-        }
-
-        let settings = makeArchiveExtractionSettings(overwriteMode: overwriteMode,
-                                                     pathMode: pathMode,
-                                                     password: password,
-                                                     inheritDownloadedFileQuarantine: inheritDownloadedFileQuarantine)
-        settings.pathPrefixToStrip = archivePathPrefixToStrip(for: itemsToExtract,
-                                                              destinationURL: destinationURL,
-                                                              pathMode: pathMode,
-                                                              eliminateDuplicates: eliminateDuplicates)
-        settings.preserveNtSecurityInfo = preserveNtSecurityInfo
-
-        return PreparedExtraction(archive: level.archive,
-                                  entryIndices: indices,
-                                  destinationPath: destinationURL.path,
-                                  settings: settings)
-    }
-
-    /// Executes a previously prepared extraction on any thread.
-    nonisolated static func performPreparedExtraction(_ prepared: PreparedExtraction,
-                                                      session: SZOperationSession?) throws
-    {
-        try prepared.archive.extractEntries(prepared.entryIndices,
-                                            toPath: prepared.destinationPath,
-                                            settings: prepared.settings,
-                                            session: session)
+        return try prepareExtraction(of: itemsToExtract,
+                                     emptySelectionMessage: SZL10n.string("app.fileManager.error.noArchiveItemsToExtract"),
+                                     to: destinationURL,
+                                     overwriteMode: overwriteMode,
+                                     pathMode: pathMode,
+                                     password: password,
+                                     preserveNtSecurityInfo: preserveNtSecurityInfo,
+                                     eliminateDuplicates: eliminateDuplicates,
+                                     inheritDownloadedFileQuarantine: inheritDownloadedFileQuarantine)
     }
 
     func testCurrentArchive(session: SZOperationSession? = nil) throws {
@@ -2195,36 +2162,61 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                                        password: String? = nil,
                                        preserveNtSecurityInfo: Bool = false,
                                        eliminateDuplicates: Bool = false,
-                                       inheritDownloadedFileQuarantine: Bool = SZSettings.bool(.inheritDownloadedFileQuarantine)) throws -> PreparedExtraction
+                                       inheritDownloadedFileQuarantine: Bool = SZSettings.bool(.inheritDownloadedFileQuarantine)) throws -> FileManagerPreparedExtraction
     {
         let selectedItems = selectedArchiveItems()
-        guard !selectedItems.isEmpty else {
-            throw paneOperationError(SZL10n.string("app.fileManager.error.selectArchiveItems"))
+        return try prepareExtraction(of: selectedItems,
+                                     emptySelectionMessage: SZL10n.string("app.fileManager.error.selectArchiveItems"),
+                                     to: destinationURL,
+                                     overwriteMode: overwriteMode,
+                                     pathMode: pathMode,
+                                     password: password,
+                                     preserveNtSecurityInfo: preserveNtSecurityInfo,
+                                     eliminateDuplicates: eliminateDuplicates,
+                                     inheritDownloadedFileQuarantine: inheritDownloadedFileQuarantine)
+    }
+
+    private var currentArchiveExtractionContext: FileManagerArchiveExtractionContext? {
+        guard let level = archiveStack.last else { return nil }
+
+        return FileManagerArchiveExtractionContext(archive: level.archive,
+                                                   allEntries: level.allEntries,
+                                                   currentSubdir: level.currentSubdir,
+                                                   quarantineSourceArchivePath: quarantineSourceArchiveURLForExtraction()?.path)
+    }
+
+    private func prepareExtraction(of itemsToExtract: [ArchiveItem],
+                                   emptySelectionMessage: String,
+                                   to destinationURL: URL,
+                                   overwriteMode: SZOverwriteMode,
+                                   pathMode: SZPathMode,
+                                   password: String?,
+                                   preserveNtSecurityInfo: Bool,
+                                   eliminateDuplicates: Bool,
+                                   inheritDownloadedFileQuarantine: Bool) throws -> FileManagerPreparedExtraction
+    {
+        guard !itemsToExtract.isEmpty else {
+            throw paneOperationError(emptySelectionMessage)
         }
 
-        guard let level = archiveStack.last else {
+        guard let context = currentArchiveExtractionContext else {
             throw paneOperationError(SZL10n.string("app.fileManager.error.noArchiveOpen"))
         }
 
-        let indices = archiveEntryIndices(for: selectedItems)
-        guard !indices.isEmpty else {
+        guard let preparedExtraction = FileManagerArchiveExtraction.prepare(items: itemsToExtract,
+                                                                            context: context,
+                                                                            destinationURL: destinationURL,
+                                                                            overwriteMode: overwriteMode,
+                                                                            pathMode: pathMode,
+                                                                            password: password,
+                                                                            preserveNtSecurityInfo: preserveNtSecurityInfo,
+                                                                            eliminateDuplicates: eliminateDuplicates,
+                                                                            inheritDownloadedFileQuarantine: inheritDownloadedFileQuarantine)
+        else {
             throw paneOperationError(SZL10n.string("app.fileManager.error.cannotExtractSelected"))
         }
 
-        let settings = makeArchiveExtractionSettings(overwriteMode: overwriteMode,
-                                                     pathMode: pathMode,
-                                                     password: password,
-                                                     inheritDownloadedFileQuarantine: inheritDownloadedFileQuarantine)
-        settings.pathPrefixToStrip = archivePathPrefixToStrip(for: selectedItems,
-                                                              destinationURL: destinationURL,
-                                                              pathMode: pathMode,
-                                                              eliminateDuplicates: eliminateDuplicates)
-        settings.preserveNtSecurityInfo = preserveNtSecurityInfo
-
-        return PreparedExtraction(archive: level.archive,
-                                  entryIndices: indices,
-                                  destinationPath: destinationURL.path,
-                                  settings: settings)
+        return preparedExtraction
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -3027,82 +3019,6 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         return false
     }
 
-    private func makeArchiveExtractionSettings(overwriteMode: SZOverwriteMode,
-                                               pathMode: SZPathMode,
-                                               password: String? = nil,
-                                               inheritDownloadedFileQuarantine: Bool = SZSettings.bool(.inheritDownloadedFileQuarantine)) -> SZExtractionSettings
-    {
-        let settings = SZExtractionSettings()
-        settings.overwriteMode = overwriteMode
-        settings.pathMode = pathMode
-        if let password, !password.isEmpty {
-            settings.password = password
-        }
-        if inheritDownloadedFileQuarantine {
-            settings.sourceArchivePathForQuarantine = quarantineSourceArchiveURLForExtraction()?.path
-        }
-        if pathMode == .currentPaths,
-           let level = archiveStack.last,
-           !level.currentSubdir.isEmpty
-        {
-            settings.pathPrefixToStrip = level.currentSubdir
-        }
-        return settings
-    }
-
-    private func archivePathPrefixToStrip(for itemsToExtract: [ArchiveItem],
-                                          destinationURL: URL,
-                                          pathMode: SZPathMode,
-                                          eliminateDuplicates: Bool) -> String?
-    {
-        let basePrefix: String? = if pathMode == .currentPaths,
-                                     let level = archiveStack.last,
-                                     !level.currentSubdir.isEmpty
-        {
-            level.currentSubdir
-        } else {
-            nil
-        }
-
-        guard eliminateDuplicates,
-              pathMode != .absolutePaths,
-              pathMode != .noPaths,
-              let duplicatePrefix = ArchiveItem.duplicateRootPrefixToStrip(for: itemsToExtract,
-                                                                           destinationLeafName: destinationURL.lastPathComponent,
-                                                                           removingPrefix: basePrefix)
-        else {
-            return basePrefix
-        }
-
-        return duplicatePrefix
-    }
-
-    private func archiveEntryIndices(for selectedItems: [ArchiveItem]) -> [NSNumber] {
-        guard let level = archiveStack.last else { return [] }
-
-        var indices = Set<Int>()
-
-        for item in selectedItems {
-            if item.index >= 0 {
-                indices.insert(item.index)
-            }
-
-            if item.isDirectory || item.index < 0 {
-                let directoryPath = normalizeArchivePath(item.path)
-                let prefix = directoryPath.isEmpty ? "" : directoryPath + "/"
-
-                for entry in level.allEntries where entry.index >= 0 {
-                    let entryPath = normalizeArchivePath(entry.path)
-                    if entryPath == directoryPath || (!prefix.isEmpty && entryPath.hasPrefix(prefix)) {
-                        indices.insert(entry.index)
-                    }
-                }
-            }
-        }
-
-        return indices.sorted().map { NSNumber(value: $0) }
-    }
-
     private func normalizeArchivePath(_ path: String) -> String {
         var normalized = path
         while normalized.hasSuffix("/") {
@@ -3136,28 +3052,16 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                                      eliminateDuplicates: Bool,
                                      inheritDownloadedFileQuarantine: Bool) throws
     {
-        guard let level = archiveStack.last else {
-            throw paneOperationError(SZL10n.string("app.fileManager.error.noArchiveOpen"))
-        }
-
-        let indices = archiveEntryIndices(for: itemsToExtract)
-        guard !indices.isEmpty else {
-            throw paneOperationError(SZL10n.string("app.fileManager.error.cannotExtractSelected"))
-        }
-
-        let settings = makeArchiveExtractionSettings(overwriteMode: overwriteMode,
-                                                     pathMode: pathMode,
-                                                     password: password,
-                                                     inheritDownloadedFileQuarantine: inheritDownloadedFileQuarantine)
-        settings.pathPrefixToStrip = archivePathPrefixToStrip(for: itemsToExtract,
-                                                              destinationURL: destinationURL,
-                                                              pathMode: pathMode,
-                                                              eliminateDuplicates: eliminateDuplicates)
-        settings.preserveNtSecurityInfo = preserveNtSecurityInfo
-        try level.archive.extractEntries(indices,
-                                         toPath: destinationURL.path,
-                                         settings: settings,
-                                         session: session)
+        let preparedExtraction = try prepareExtraction(of: itemsToExtract,
+                                                       emptySelectionMessage: SZL10n.string("app.fileManager.error.cannotExtractSelected"),
+                                                       to: destinationURL,
+                                                       overwriteMode: overwriteMode,
+                                                       pathMode: pathMode,
+                                                       password: password,
+                                                       preserveNtSecurityInfo: preserveNtSecurityInfo,
+                                                       eliminateDuplicates: eliminateDuplicates,
+                                                       inheritDownloadedFileQuarantine: inheritDownloadedFileQuarantine)
+        try preparedExtraction.perform(session: session)
     }
 
     private func paneOperationError(_ description: String) -> NSError {
@@ -5080,7 +4984,7 @@ extension FileManagerPaneController {
                     try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("progress.extracting"),
                                                          parentWindow: parentWindow)
                     { session in
-                        try FileManagerPaneController.performPreparedExtraction(prepared, session: session)
+                        try prepared.perform(session: session)
                     }
                 } catch {
                     showErrorAlert(error)

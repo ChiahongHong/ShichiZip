@@ -780,7 +780,7 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
                         try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("fileop.copying"),
                                                              parentWindow: parentWindow)
                         { session in
-                            try FileManagerPaneController.performPreparedExtraction(prepared, session: session)
+                            try prepared.perform(session: session)
                         }
                         refreshPaneDisplayingDirectory(destURL)
                     } catch {

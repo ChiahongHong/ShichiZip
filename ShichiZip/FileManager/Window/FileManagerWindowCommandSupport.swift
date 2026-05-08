@@ -50,13 +50,13 @@ enum FileManagerArchiveCommandSupport {
         }
     }
 
-    static func extractPreparedArchiveItems(_ prepared: FileManagerPaneController.PreparedExtraction,
+    static func extractPreparedArchiveItems(_ prepared: FileManagerPreparedExtraction,
                                             parentWindow: NSWindow) async throws
     {
         try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("progress.extracting"),
                                              parentWindow: parentWindow)
         { session in
-            try FileManagerPaneController.performPreparedExtraction(prepared, session: session)
+            try prepared.perform(session: session)
         }
     }
 
