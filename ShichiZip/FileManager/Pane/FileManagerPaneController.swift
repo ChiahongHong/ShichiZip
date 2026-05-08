@@ -2,7 +2,7 @@ import Cocoa
 import os
 
 /// Single pane of the file manager — displays file system contents
-class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate, NSTextFieldDelegate, NSMenuItemValidation {
+class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate, NSTextFieldDelegate, NSMenuItemValidation, FileManagerPaneTransferHost {
     // MARK: - Types
 
     private static let addressBarIconSize: CGFloat = 14
@@ -40,8 +40,8 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     private var directoryWatcher: DirectoryWatcher?
     private var archiveRefreshGeneration = 0
     private var archiveRefreshTask: Task<Void, Never>?
-    private var pendingDropOperation: (sequenceNumber: Int, operation: NSDragOperation)?
     private let iconProvider = FileManagerPaneIconProvider(iconSize: NSSize(width: 16, height: 16))
+    private let transferCoordinator = FileManagerPaneTransferCoordinator()
     private var iconSize: NSSize {
         iconProvider.iconSize
     }
@@ -58,22 +58,6 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     private var items: [FileSystemItem] = []
-
-    private enum PaneItem {
-        case parent
-        case filesystem(FileSystemItem)
-        case archive(ArchiveItem)
-
-        var fileSystemItem: FileSystemItem? {
-            guard case let .filesystem(item) = self else { return nil }
-            return item
-        }
-
-        var archiveItem: ArchiveItem? {
-            guard case let .archive(item) = self else { return nil }
-            return item
-        }
-    }
 
     private let archiveSession = FileManagerArchiveSession()
     private var isInsideArchive: Bool {
@@ -768,6 +752,15 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         return (target.archive, target.subdir)
     }
 
+    private func revalidatedArchiveMutationTarget(for target: (archive: SZArchive, subdir: String)) -> (archive: SZArchive, subdir: String)? {
+        guard let archiveURL = archiveSession.archiveURL(for: target.archive) else {
+            return nil
+        }
+
+        return currentArchiveMutationTarget(for: archiveURL,
+                                            subdir: target.subdir)
+    }
+
     func currentArchiveDestinationDisplayPath() -> String? {
         guard isInsideArchive, supportsInPlaceArchiveMutation else {
             return nil
@@ -792,6 +785,21 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         }
 
         return (target.archive, target.subdir)
+    }
+
+    private func transferArchiveTarget(for archive: SZArchive,
+                                       subdir: String) -> FileManagerPaneArchiveTransferTarget?
+    {
+        guard let archiveURL = archiveSession.archiveURL(for: archive),
+              let target = currentArchiveMutationTarget(for: archiveURL,
+                                                        subdir: subdir)
+        else {
+            return nil
+        }
+
+        return FileManagerPaneArchiveTransferTarget(archive: target.archive,
+                                                    subdir: target.subdir,
+                                                    archiveURL: archiveURL)
     }
 
     var canQuickLookSelection: Bool {
@@ -1527,7 +1535,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     private func quickLookSourceInfo(forRow row: Int,
-                                     paneItem: PaneItem) -> FileManagerQuickLookItemSource
+                                     paneItem: FileManagerPaneItem) -> FileManagerQuickLookItemSource
     {
         let transitionImage = makeQuickLookTransitionImage(for: paneItem)
         return FileManagerQuickLookItemSource(frameOnScreen: FileManagerQuickLookSourceGeometry.frameOnScreen(forRow: row,
@@ -1537,7 +1545,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                                               transitionImage: transitionImage)
     }
 
-    private func makeQuickLookTransitionImage(for paneItem: PaneItem) -> NSImage? {
+    private func makeQuickLookTransitionImage(for paneItem: FileManagerPaneItem) -> NSImage? {
         let itemName: String
         let isDirectory: Bool
         let iconPath: String
@@ -1562,14 +1570,14 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                                             showsRealFileIcons: showsRealFileIcons)
     }
 
-    private func iconImage(for paneItem: PaneItem, isDirectory: Bool, iconPath: String) -> NSImage? {
+    private func iconImage(for paneItem: FileManagerPaneItem, isDirectory: Bool, iconPath: String) -> NSImage? {
         iconProvider.image(for: iconSource(for: paneItem,
                                            isDirectory: isDirectory,
                                            iconPath: iconPath),
                            showsRealFileIcons: showsRealFileIcons)
     }
 
-    private func iconSource(for paneItem: PaneItem,
+    private func iconSource(for paneItem: FileManagerPaneItem,
                             isDirectory: Bool,
                             iconPath: String) -> FileManagerPaneIconSource
     {
@@ -1822,7 +1830,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         }
     }
 
-    private func paneItem(at row: Int) -> PaneItem? {
+    private func paneItem(at row: Int) -> FileManagerPaneItem? {
         if showsParentRow, row == 0 {
             return .parent
         }
@@ -1837,36 +1845,85 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         return .filesystem(items[itemRow])
     }
 
-    private func dropDestinationDirectory(for row: Int,
-                                          dropOperation: NSTableView.DropOperation) -> URL?
-    {
-        guard !isInsideArchive else { return nil }
-        return FileOperationDropTargetResolver.fileSystemDestination(currentDirectory: currentDirectory,
-                                                                     dropOperation: dropOperation,
-                                                                     item: paneItem(at: row)?.fileSystemItem)
+    var transferLocation: FileManagerPaneTransferLocation {
+        FileManagerPaneTransferLocation(isVirtualLocation: isVirtualLocation,
+                                        currentDirectoryURL: currentDirectoryURL,
+                                        presentationWindow: view.window)
     }
 
-    private func archiveDropMutationTarget(for row: Int,
-                                           dropOperation: NSTableView.DropOperation) -> (archive: SZArchive, subdir: String)?
-    {
-        guard let target = currentArchiveMutationTarget() else {
-            return nil
-        }
-
-        guard let targetSubdir = FileOperationDropTargetResolver.archiveDestinationSubdir(currentSubdir: target.subdir,
-                                                                                          dropOperation: dropOperation,
-                                                                                          item: paneItem(at: row)?.archiveItem)
-        else {
-            return nil
-        }
-        return (target.archive, targetSubdir)
+    func transferItem(at row: Int) -> FileManagerPaneItem? {
+        paneItem(at: row)
     }
 
-    private func selectedPaneItems() -> [PaneItem] {
+    func transferArchiveDragContext(acquireLease: Bool) -> FileManagerPaneArchiveDragContext? {
+        guard let level = archiveSession.currentLevel,
+              let context = currentArchiveItemWorkflowContext(acquireLease: acquireLease)
+        else { return nil }
+
+        return FileManagerPaneArchiveDragContext(itemWorkflowContext: context,
+                                                 operationGate: level.operationGate,
+                                                 workflowService: archiveSession.itemWorkflowService)
+    }
+
+    func transferCurrentArchiveMutationTarget() -> FileManagerPaneArchiveTransferTarget? {
+        guard let target = currentArchiveMutationTarget() else { return nil }
+        return transferArchiveTarget(for: target.archive,
+                                     subdir: target.subdir)
+    }
+
+    func transferArchiveMutationTarget(for archive: SZArchive, subdir: String) -> FileManagerPaneArchiveTransferTarget? {
+        transferArchiveTarget(for: archive,
+                              subdir: subdir)
+    }
+
+    func transferCanMoveOrCopyFileSystemItems(_ urls: [URL],
+                                              to destinationDirectory: URL,
+                                              operation: NSDragOperation,
+                                              presentingIn window: NSWindow?) -> Bool
+    {
+        canTransferFileSystemItemURLs(urls,
+                                      to: destinationDirectory,
+                                      operation: operation,
+                                      presentingIn: window)
+    }
+
+    func transferCanMoveOrCopyFileSystemItemsToArchive(_ urls: [URL],
+                                                       archiveURL: URL,
+                                                       operation: NSDragOperation,
+                                                       presentingIn window: NSWindow?) -> Bool
+    {
+        canTransferFileSystemItemURLsToArchive(urls,
+                                               archiveURL: archiveURL,
+                                               operation: operation,
+                                               presentingIn: window)
+    }
+
+    func transferRefresh() {
+        refresh()
+    }
+
+    func transferDidMutateArchive(targetSubdir: String?,
+                                  selectingPaths paths: [String])
+    {
+        refreshArchiveAfterMutation(targetSubdir: targetSubdir,
+                                    selectingPaths: paths)
+        publishArchiveMutationIfNeeded(targetSubdir: targetSubdir,
+                                       selectingPaths: paths)
+    }
+
+    func transferShowError(_ error: Error) {
+        showErrorAlert(error)
+    }
+
+    func transferShowReadOnlyArchiveMutationAlert(action: String) {
+        showReadOnlyArchiveMutationAlert(action: action)
+    }
+
+    private func selectedPaneItems() -> [FileManagerPaneItem] {
         tableView.selectedRowIndexes.compactMap { paneItem(at: $0) }
     }
 
-    private func selectedQuickLookRowsAndItems() -> [(row: Int, item: PaneItem)] {
+    private func selectedQuickLookRowsAndItems() -> [(row: Int, item: FileManagerPaneItem)] {
         tableView.selectedRowIndexes.compactMap { row in
             guard let item = paneItem(at: row) else { return nil }
             if case .parent = item {
@@ -1876,7 +1933,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         }
     }
 
-    private func selectedRealPaneItems() -> [PaneItem] {
+    private func selectedRealPaneItems() -> [FileManagerPaneItem] {
         selectedPaneItems().filter {
             if case .parent = $0 {
                 return false
@@ -1885,7 +1942,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         }
     }
 
-    private func selectedSingleRealPaneItem() -> PaneItem? {
+    private func selectedSingleRealPaneItem() -> FileManagerPaneItem? {
         let items = selectedRealPaneItems()
         guard items.count == 1 else { return nil }
         return items[0]
@@ -1911,12 +1968,12 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         }
     }
 
-    private func paneItemsForSelectionOrDisplayedItems() -> [PaneItem] {
+    private func paneItemsForSelectionOrDisplayedItems() -> [FileManagerPaneItem] {
         let selectedItems = selectedRealPaneItems()
         if !selectedItems.isEmpty {
             return selectedItems
         }
-        return isInsideArchive ? archiveSession.displayItems.map(PaneItem.archive) : []
+        return isInsideArchive ? archiveSession.displayItems.map(FileManagerPaneItem.archive) : []
     }
 
     private func archiveItemsForSelectionOrDisplayedItems() -> [ArchiveItem] {
@@ -2923,238 +2980,31 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     // MARK: - Drag Source
 
     func tableView(_: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
-        guard let paneItem = paneItem(at: row) else { return nil }
-
-        switch paneItem {
-        case .parent:
-            return nil
-
-        case let .archive(ai):
-            // Build context without a lease — the lease is acquired lazily in
-            // writePromiseAsync so it doesn't outlive the extraction.
-            guard let level = archiveSession.currentLevel,
-                  let context = currentArchiveItemWorkflowContext(acquireLease: false)
-            else { return nil }
-
-            let promise = ArchiveDragPromise(item: ai,
-                                             context: context,
-                                             operationGate: level.operationGate,
-                                             workflowService: archiveSession.itemWorkflowService)
-            let provider = NSFilePromiseProvider(fileType: ArchiveDragPromise.fileType(for: ai),
-                                                 delegate: promise)
-            provider.userInfo = promise
-            return provider
-
-        case let .filesystem(item):
-            return item.url as NSURL
-        }
+        transferCoordinator.pasteboardWriter(forRow: row,
+                                             host: self)
     }
 
     // MARK: - Drop Destination (accept files dragged into this folder)
 
     func tableView(_ tableView: NSTableView, validateDrop info: any NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
-        if isInsideArchive {
-            guard sourcePaneController(for: info)?.isVirtualLocation != true,
-                  archiveDropMutationTarget(for: row, dropOperation: dropOperation) != nil
-            else {
-                pendingDropOperation = nil
-                return []
-            }
-
-            if dropOperation == .on {
-                tableView.setDropRow(row, dropOperation: .on)
-            } else {
-                tableView.setDropRow(-1, dropOperation: .on)
-            }
-
-            let operation = resolvedArchiveDropOperation(for: info)
-            pendingDropOperation = operation.isEmpty ? nil : (info.draggingSequenceNumber, operation)
-            return operation
-        }
-
-        guard let destinationDirectory = dropDestinationDirectory(for: row, dropOperation: dropOperation) else {
-            return []
-        }
-
-        if dropOperation == .on {
-            tableView.setDropRow(row, dropOperation: .on)
-        } else {
-            tableView.setDropRow(-1, dropOperation: .on)
-        }
-
-        let operation = resolvedDropOperation(for: info, destinationDirectory: destinationDirectory)
-        pendingDropOperation = operation.isEmpty ? nil : (info.draggingSequenceNumber, operation)
-        return operation
+        transferCoordinator.validateDrop(info,
+                                         proposedRow: row,
+                                         dropOperation: dropOperation,
+                                         in: tableView,
+                                         host: self)
     }
 
     func tableView(_: NSTableView, acceptDrop info: any NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
-        let sourcePane = sourcePaneController(for: info)
-
-        if isInsideArchive {
-            guard sourcePane?.isVirtualLocation != true,
-                  let target = archiveDropMutationTarget(for: row, dropOperation: dropOperation)
-            else {
-                return false
-            }
-
-            let operation = takeResolvedArchiveDropOperation(for: info)
-
-            let promiseReceivers = FileOperationDropResolver.promiseReceivers(in: info.draggingPasteboard)
-            if !promiseReceivers.isEmpty {
-                receivePromisedFiles(promiseReceivers,
-                                     intoArchive: target,
-                                     sourcePane: sourcePane)
-                return true
-            }
-
-            guard !operation.isEmpty else { return false }
-            let urls = FileOperationDropResolver.fileURLs(in: info.draggingPasteboard)
-            guard !urls.isEmpty else { return false }
-
-            guard canTransferFileSystemItemURLsToArchive(urls,
-                                                         archiveURL: archiveDestinationFileURL(for: target),
-                                                         operation: operation,
-                                                         presentingIn: view.window)
-            else {
-                return false
-            }
-
-            beginConfirmedArchiveTransfer(urls,
-                                          to: target,
-                                          operation: operation,
-                                          sourcePane: sourcePane)
-            return true
-        }
-
-        guard let destDir = dropDestinationDirectory(for: row, dropOperation: dropOperation) else {
-            return false
-        }
-        let operation = takeResolvedDropOperation(for: info, destinationDirectory: destDir)
-
-        let promiseReceivers = FileOperationDropResolver.promiseReceivers(in: info.draggingPasteboard)
-        if !promiseReceivers.isEmpty {
-            receivePromisedFiles(promiseReceivers, at: destDir)
-            return true
-        }
-
-        guard !operation.isEmpty else { return false }
-        let urls = FileOperationDropResolver.fileURLs(in: info.draggingPasteboard)
-        guard !urls.isEmpty else { return false }
-
-        guard canTransferFileSystemItemURLs(urls,
-                                            to: destDir,
-                                            operation: operation,
-                                            presentingIn: view.window)
-        else {
-            return false
-        }
-
-        beginDroppedFileTransfer(urls,
-                                 to: destDir,
-                                 operation: operation,
-                                 sourcePane: sourcePane)
-        return true
+        transferCoordinator.acceptDrop(info,
+                                       row: row,
+                                       dropOperation: dropOperation,
+                                       host: self)
     }
 
     func tableViewSelectionDidChange(_: Notification) {
         updateStatusBar()
         delegate?.paneDidBecomeActive(self)
         delegate?.paneSelectionDidChange(self)
-    }
-
-    private func resolvedDropOperation(for info: any NSDraggingInfo,
-                                       destinationDirectory: URL) -> NSDragOperation
-    {
-        FileOperationDropResolver.fileSystemDropOperation(sourceMask: info.draggingSourceOperationMask,
-                                                          containsFilePromises: FileOperationDropResolver.containsFilePromises(in: info.draggingPasteboard),
-                                                          droppedFileURLs: FileOperationDropResolver.fileURLs(in: info.draggingPasteboard),
-                                                          destinationDirectory: destinationDirectory)
-    }
-
-    private func takeResolvedDropOperation(for info: any NSDraggingInfo,
-                                           destinationDirectory: URL) -> NSDragOperation
-    {
-        defer { pendingDropOperation = nil }
-
-        if let pendingDropOperation,
-           pendingDropOperation.sequenceNumber == info.draggingSequenceNumber
-        {
-            return pendingDropOperation.operation
-        }
-
-        return resolvedDropOperation(for: info, destinationDirectory: destinationDirectory)
-    }
-
-    private func resolvedArchiveDropOperation(for info: any NSDraggingInfo) -> NSDragOperation {
-        FileOperationDropResolver.archiveDropOperation(sourceMask: info.draggingSourceOperationMask,
-                                                       containsFilePromises: FileOperationDropResolver.containsFilePromises(in: info.draggingPasteboard))
-    }
-
-    private func takeResolvedArchiveDropOperation(for info: any NSDraggingInfo) -> NSDragOperation {
-        defer { pendingDropOperation = nil }
-
-        if let pendingDropOperation,
-           pendingDropOperation.sequenceNumber == info.draggingSequenceNumber
-        {
-            return pendingDropOperation.operation
-        }
-
-        return resolvedArchiveDropOperation(for: info)
-    }
-
-    private func archiveDestinationFileURL(for target: (archive: SZArchive, subdir: String)) -> URL? {
-        archiveSession.archiveURL(for: target.archive)
-    }
-
-    private func revalidatedArchiveMutationTarget(for target: (archive: SZArchive, subdir: String)) -> (archive: SZArchive, subdir: String)? {
-        guard let archiveURL = archiveDestinationFileURL(for: target) else {
-            return nil
-        }
-
-        return currentArchiveMutationTarget(for: archiveURL,
-                                            subdir: target.subdir)
-    }
-
-    private func sourcePaneController(for info: any NSDraggingInfo) -> FileManagerPaneController? {
-        guard let sourceTableView = info.draggingSource as? NSTableView else {
-            return nil
-        }
-
-        return sourceTableView.delegate as? FileManagerPaneController
-    }
-
-    private func beginDroppedFileTransfer(_ urls: [URL],
-                                          to destinationDirectory: URL,
-                                          operation: NSDragOperation,
-                                          sourcePane: FileManagerPaneController?)
-    {
-        let operationTitle = operation == .move ? SZL10n.string("fileop.moving") : SZL10n.string("fileop.copying")
-
-        Task { @MainActor [weak self, weak sourcePane] in
-            guard let self else { return }
-
-            do {
-                try await ArchiveOperationRunner.run(operationTitle: operationTitle,
-                                                     parentWindow: view.window,
-                                                     deferredDisplay: true)
-                { session in
-                    try FileOperationFileSystemTransfer.perform(urls,
-                                                                to: destinationDirectory,
-                                                                operation: operation,
-                                                                session: session)
-                }
-
-                refresh()
-                if operation == .move,
-                   let sourcePane,
-                   sourcePane !== self
-                {
-                    sourcePane.refresh()
-                }
-            } catch {
-                showErrorAlert(error)
-            }
-        }
     }
 
     func beginArchiveTransfer(_ urls: [URL],
@@ -3167,75 +3017,26 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                               operationTitle: String? = nil)
     {
         guard !urls.isEmpty else {
-            if let cleanupDirectory {
-                try? FileManager.default.removeItem(at: cleanupDirectory)
-            }
+            cleanupArchiveTransferDirectory(cleanupDirectory)
             return
         }
-
-        guard canTransferFileSystemItemURLsToArchive(urls,
-                                                     archiveURL: archiveDestinationFileURL(for: target),
-                                                     operation: operation,
-                                                     presentingIn: parentWindow ?? view.window)
+        guard let transferTarget = transferArchiveTarget(for: target.archive,
+                                                         subdir: target.subdir)
         else {
-            if let cleanupDirectory {
-                try? FileManager.default.removeItem(at: cleanupDirectory)
-            }
+            cleanupArchiveTransferDirectory(cleanupDirectory)
+            showUnavailableArchiveTransferAlert(operation: operation)
             return
         }
 
-        guard requiresConfirmation else {
-            beginDroppedArchiveTransfer(urls,
-                                        to: target,
-                                        operation: operation,
-                                        sourcePane: sourcePane,
-                                        cleanupDirectory: cleanupDirectory,
-                                        operationTitle: operationTitle)
-            return
-        }
-
-        guard let window = parentWindow ?? view.window else {
-            beginDroppedArchiveTransfer(urls,
-                                        to: target,
-                                        operation: operation,
-                                        sourcePane: sourcePane,
-                                        cleanupDirectory: cleanupDirectory,
-                                        operationTitle: operationTitle)
-            return
-        }
-
-        let archiveName = archiveSession.currentLevel.map { URL(fileURLWithPath: $0.archivePath).lastPathComponent } ?? "archive"
-        let confirmation = FileOperationArchiveTransferConfirmation(sourceURLs: urls,
-                                                                    archiveName: archiveName,
-                                                                    targetSubdir: target.subdir,
-                                                                    operation: operation)
-        let confirmTitle = operation == .move ? SZL10n.string("toolbar.move") : SZL10n.string("toolbar.add")
-        szBeginConfirmation(on: window,
-                            title: confirmation.title,
-                            message: confirmation.message,
-                            confirmTitle: confirmTitle)
-        { [weak self, weak sourcePane] confirmed in
-            guard let self else {
-                if let cleanupDirectory {
-                    try? FileManager.default.removeItem(at: cleanupDirectory)
-                }
-                return
-            }
-
-            guard confirmed else {
-                if let cleanupDirectory {
-                    try? FileManager.default.removeItem(at: cleanupDirectory)
-                }
-                return
-            }
-
-            beginDroppedArchiveTransfer(urls,
-                                        to: target,
-                                        operation: operation,
-                                        sourcePane: sourcePane,
-                                        cleanupDirectory: cleanupDirectory,
-                                        operationTitle: operationTitle)
-        }
+        transferCoordinator.beginArchiveTransfer(urls,
+                                                 to: transferTarget,
+                                                 operation: operation,
+                                                 sourceHost: sourcePane,
+                                                 host: self,
+                                                 cleanupDirectory: cleanupDirectory,
+                                                 parentWindow: parentWindow,
+                                                 requiresConfirmation: requiresConfirmation,
+                                                 operationTitle: operationTitle)
     }
 
     func beginConfirmedArchiveTransfer(_ urls: [URL],
@@ -3246,119 +3047,38 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                                        parentWindow: NSWindow? = nil,
                                        operationTitle: String? = nil)
     {
-        beginArchiveTransfer(urls,
-                             to: target,
-                             operation: operation,
-                             sourcePane: sourcePane,
-                             cleanupDirectory: cleanupDirectory,
-                             parentWindow: parentWindow,
-                             requiresConfirmation: true,
-                             operationTitle: operationTitle)
-    }
-
-    private func beginDroppedArchiveTransfer(_ urls: [URL],
-                                             to target: (archive: SZArchive, subdir: String),
-                                             operation: NSDragOperation,
-                                             sourcePane: FileManagerPaneController?,
-                                             cleanupDirectory: URL? = nil,
-                                             operationTitle: String? = nil)
-    {
-        let defaultOperationTitle = operation == .move ? SZL10n.string("fileop.moving") : SZL10n.string("fileop.copying")
-        let resolvedOperationTitle = operationTitle ?? defaultOperationTitle
-
-        Task { @MainActor [weak self, weak sourcePane] in
-            defer {
-                if let cleanupDirectory {
-                    try? FileManager.default.removeItem(at: cleanupDirectory)
-                }
-            }
-
-            guard let self else { return }
-            guard let currentTarget = revalidatedArchiveMutationTarget(for: target) else {
-                showReadOnlyArchiveMutationAlert(action: operation == .move ? SZL10n.string("app.fileManager.action.movingFilesIntoArchive") : SZL10n.string("app.fileManager.action.addingFilesToArchive"))
-                return
-            }
-
-            let selectionPaths = FileOperationArchiveTransferSelection.selectionPaths(for: urls,
-                                                                                      targetSubdir: currentTarget.subdir)
-
-            do {
-                try await ArchiveOperationRunner.run(operationTitle: resolvedOperationTitle,
-                                                     parentWindow: view.window,
-                                                     deferredDisplay: true)
-                { session in
-                    try currentTarget.archive.addPaths(urls.map(\.path),
-                                                       toArchiveSubdir: currentTarget.subdir,
-                                                       moveMode: operation == .move,
-                                                       session: session)
-                }
-
-                refreshArchiveAfterMutation(targetSubdir: currentTarget.subdir,
-                                            selectingPaths: selectionPaths)
-                publishArchiveMutationIfNeeded(targetSubdir: currentTarget.subdir,
-                                               selectingPaths: selectionPaths)
-                if operation == .move,
-                   let sourcePane,
-                   sourcePane !== self
-                {
-                    sourcePane.refresh()
-                }
-            } catch {
-                showErrorAlert(error)
-            }
+        guard !urls.isEmpty else {
+            cleanupArchiveTransferDirectory(cleanupDirectory)
+            return
         }
-    }
-
-    private func receivePromisedFiles(_ promiseReceivers: [NSFilePromiseReceiver],
-                                      at destinationDirectory: URL)
-    {
-        FileOperationPromisedFileReceiver.receive(promiseReceivers,
-                                                  at: destinationDirectory)
-        { [weak self] reception in
-            self?.refresh()
-            if let error = reception.firstError {
-                self?.showErrorAlert(error)
-            }
-        }
-    }
-
-    private func receivePromisedFiles(_ promiseReceivers: [NSFilePromiseReceiver],
-                                      intoArchive target: (archive: SZArchive, subdir: String),
-                                      sourcePane: FileManagerPaneController?)
-    {
-        let stagingDirectory: URL
-        do {
-            stagingDirectory = try FileManagerTemporaryDirectorySupport.makeTemporaryDirectory(prefix: FileManagerTemporaryDirectorySupport.stagingPrefix)
-        } catch {
-            showErrorAlert(error)
+        guard let transferTarget = transferArchiveTarget(for: target.archive,
+                                                         subdir: target.subdir)
+        else {
+            cleanupArchiveTransferDirectory(cleanupDirectory)
+            showUnavailableArchiveTransferAlert(operation: operation)
             return
         }
 
-        FileOperationPromisedFileReceiver.receive(promiseReceivers,
-                                                  at: stagingDirectory)
-        { [weak self, weak sourcePane] reception in
-            guard let self else {
-                try? FileManager.default.removeItem(at: stagingDirectory)
-                return
-            }
+        transferCoordinator.beginArchiveTransfer(urls,
+                                                 to: transferTarget,
+                                                 operation: operation,
+                                                 sourceHost: sourcePane,
+                                                 host: self,
+                                                 cleanupDirectory: cleanupDirectory,
+                                                 parentWindow: parentWindow,
+                                                 requiresConfirmation: true,
+                                                 operationTitle: operationTitle)
+    }
 
-            if let firstError = reception.firstError {
-                try? FileManager.default.removeItem(at: stagingDirectory)
-                showErrorAlert(firstError)
-                return
-            }
+    private func cleanupArchiveTransferDirectory(_ url: URL?) {
+        guard let url else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
 
-            guard !reception.fileURLs.isEmpty else {
-                try? FileManager.default.removeItem(at: stagingDirectory)
-                return
-            }
-
-            beginConfirmedArchiveTransfer(reception.fileURLs,
-                                          to: target,
-                                          operation: .copy,
-                                          sourcePane: sourcePane,
-                                          cleanupDirectory: stagingDirectory)
-        }
+    private func showUnavailableArchiveTransferAlert(operation: NSDragOperation) {
+        showReadOnlyArchiveMutationAlert(action: operation == .move
+            ? SZL10n.string("app.fileManager.action.movingFilesIntoArchive")
+            : SZL10n.string("app.fileManager.action.addingFilesToArchive"))
     }
 
     // MARK: - Sorting (matches PanelSort.cpp)

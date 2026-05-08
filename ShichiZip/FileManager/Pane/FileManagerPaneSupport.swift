@@ -1,6 +1,22 @@
 import Cocoa
 import UniformTypeIdentifiers
 
+enum FileManagerPaneItem {
+    case parent
+    case filesystem(FileSystemItem)
+    case archive(ArchiveItem)
+
+    var fileSystemItem: FileSystemItem? {
+        guard case let .filesystem(item) = self else { return nil }
+        return item
+    }
+
+    var archiveItem: ArchiveItem? {
+        guard case let .archive(item) = self else { return nil }
+        return item
+    }
+}
+
 @MainActor
 struct FileManagerPaneRoutingContext {
     let leftPane: FileManagerPaneController
