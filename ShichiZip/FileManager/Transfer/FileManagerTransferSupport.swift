@@ -294,6 +294,103 @@ enum FileOperationDestinationResolver {
     }
 }
 
+enum FileOperationArchiveTransferSelection {
+    static func selectionPaths(for sourceURLs: [URL], targetSubdir: String) -> [String] {
+        let normalizedTargetSubdir = normalizeArchivePath(targetSubdir)
+        var seenPaths = Set<String>()
+        var selectionPaths: [String] = []
+
+        for url in sourceURLs {
+            let leafName = url.lastPathComponent
+            guard !leafName.isEmpty else { continue }
+
+            let path = normalizedTargetSubdir.isEmpty ? leafName : normalizedTargetSubdir + "/" + leafName
+            let normalizedPath = normalizeArchivePath(path)
+            guard seenPaths.insert(normalizedPath).inserted else { continue }
+            selectionPaths.append(normalizedPath)
+        }
+
+        return selectionPaths
+    }
+
+    private static func normalizeArchivePath(_ path: String) -> String {
+        var normalized = path
+        while normalized.hasSuffix("/") {
+            normalized.removeLast()
+        }
+        return normalized
+    }
+}
+
+enum FileOperationDropResolver {
+    static func fileSystemDropOperation(sourceMask: NSDragOperation,
+                                        containsFilePromises: Bool,
+                                        droppedFileURLs: [URL],
+                                        destinationDirectory: URL,
+                                        volumeURLProvider: (URL) -> URL? = defaultVolumeURL) -> NSDragOperation
+    {
+        if containsFilePromises {
+            return .copy
+        }
+
+        let canCopy = sourceMask.contains(.copy)
+        let canMove = sourceMask.contains(.move)
+
+        switch (canCopy, canMove) {
+        case (false, false):
+            return []
+        case (true, false):
+            return .copy
+        case (false, true):
+            return .move
+        case (true, true):
+            guard !droppedFileURLs.isEmpty else {
+                return .move
+            }
+            return shouldPreferMoveForDroppedURLs(droppedFileURLs,
+                                                  destinationDirectory: destinationDirectory,
+                                                  volumeURLProvider: volumeURLProvider) ? .move : .copy
+        }
+    }
+
+    static func archiveDropOperation(sourceMask: NSDragOperation,
+                                     containsFilePromises: Bool) -> NSDragOperation
+    {
+        if containsFilePromises {
+            return .copy
+        }
+
+        let canCopy = sourceMask.contains(.copy)
+        let canMove = sourceMask.contains(.move)
+
+        switch (canCopy, canMove) {
+        case (false, false):
+            return []
+        case (true, false):
+            return .copy
+        case (false, true):
+            return .move
+        case (true, true):
+            return .copy
+        }
+    }
+
+    private static func shouldPreferMoveForDroppedURLs(_ urls: [URL],
+                                                       destinationDirectory: URL,
+                                                       volumeURLProvider: (URL) -> URL?) -> Bool
+    {
+        guard let destinationVolumeURL = volumeURLProvider(destinationDirectory) else {
+            return false
+        }
+
+        return urls.allSatisfy { volumeURLProvider($0) == destinationVolumeURL }
+    }
+
+    private static func defaultVolumeURL(for url: URL) -> URL? {
+        try? url.resourceValues(forKeys: [.volumeURLKey]).volume?.standardizedFileURL
+    }
+}
+
 @MainActor
 enum FileOperationArchiveDestinationTransfer {
     static func perform(_ sourceURLs: [URL],
@@ -321,7 +418,8 @@ enum FileOperationArchiveDestinationTransfer {
         }
 
         let operationTitle = SZL10n.string(move ? "fileop.moving" : "fileop.copying")
-        let selectionPaths = archiveSelectionPaths(for: sourceURLs, targetSubdir: subdir)
+        let selectionPaths = FileOperationArchiveTransferSelection.selectionPaths(for: sourceURLs,
+                                                                                  targetSubdir: subdir)
 
         Task { @MainActor [weak sourcePane, weak parentWindow] in
             guard let parentWindow else { return }
@@ -363,24 +461,6 @@ enum FileOperationArchiveDestinationTransfer {
         }
 
         return nil
-    }
-
-    private static func archiveSelectionPaths(for sourceURLs: [URL],
-                                              targetSubdir: String) -> [String]
-    {
-        var seenPaths = Set<String>()
-        var selectionPaths: [String] = []
-
-        for url in sourceURLs {
-            let leafName = url.lastPathComponent
-            guard !leafName.isEmpty else { continue }
-
-            let path = targetSubdir.isEmpty ? leafName : targetSubdir + "/" + leafName
-            guard seenPaths.insert(path).inserted else { continue }
-            selectionPaths.append(path)
-        }
-
-        return selectionPaths
     }
 }
 

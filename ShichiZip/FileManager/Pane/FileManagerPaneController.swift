@@ -2940,25 +2940,6 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         }
     }
 
-    private func archiveSelectionPaths(for urls: [URL],
-                                       targetSubdir: String) -> [String]
-    {
-        var seenPaths = Set<String>()
-        var selectionPaths: [String] = []
-
-        for url in urls {
-            let leafName = url.lastPathComponent
-            guard !leafName.isEmpty else { continue }
-
-            let path = targetSubdir.isEmpty ? leafName : targetSubdir + "/" + leafName
-            let normalizedPath = normalizeArchivePath(path)
-            guard seenPaths.insert(normalizedPath).inserted else { continue }
-            selectionPaths.append(normalizedPath)
-        }
-
-        return selectionPaths
-    }
-
     @discardableResult
     private func openExternallyIfPossible(_ url: URL,
                                           preservingTemporaryDirectory temporaryDirectory: URL? = nil) -> Bool
@@ -3972,28 +3953,10 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     private func resolvedDropOperation(for info: any NSDraggingInfo,
                                        destinationDirectory: URL) -> NSDragOperation
     {
-        if pasteboardContainsFilePromises(info.draggingPasteboard) {
-            return .copy
-        }
-
-        let sourceMask = info.draggingSourceOperationMask
-        let canCopy = sourceMask.contains(.copy)
-        let canMove = sourceMask.contains(.move)
-
-        switch (canCopy, canMove) {
-        case (false, false):
-            return []
-        case (true, false):
-            return .copy
-        case (false, true):
-            return .move
-        case (true, true):
-            let urls = droppedFileURLs(from: info)
-            guard !urls.isEmpty else {
-                return .move
-            }
-            return shouldPreferMoveForDroppedURLs(urls, destinationDirectory: destinationDirectory) ? .move : .copy
-        }
+        FileOperationDropResolver.fileSystemDropOperation(sourceMask: info.draggingSourceOperationMask,
+                                                          containsFilePromises: pasteboardContainsFilePromises(info.draggingPasteboard),
+                                                          droppedFileURLs: droppedFileURLs(from: info),
+                                                          destinationDirectory: destinationDirectory)
     }
 
     private func takeResolvedDropOperation(for info: any NSDraggingInfo,
@@ -4011,25 +3974,8 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     private func resolvedArchiveDropOperation(for info: any NSDraggingInfo) -> NSDragOperation {
-        if pasteboardContainsFilePromises(info.draggingPasteboard) {
-            return .copy
-        }
-
-        let sourceMask = info.draggingSourceOperationMask
-        let canCopy = sourceMask.contains(.copy)
-        let canMove = sourceMask.contains(.move)
-
-        switch (canCopy, canMove) {
-        case (false, false):
-            return []
-        case (true, false):
-            return .copy
-        case (false, true):
-            return .move
-        case (true, true):
-            // Default archive drops to copy to avoid deleting the source unexpectedly.
-            return .copy
-        }
+        FileOperationDropResolver.archiveDropOperation(sourceMask: info.draggingSourceOperationMask,
+                                                       containsFilePromises: pasteboardContainsFilePromises(info.draggingPasteboard))
     }
 
     private func takeResolvedArchiveDropOperation(for info: any NSDraggingInfo) -> NSDragOperation {
@@ -4071,20 +4017,6 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
 
         return currentArchiveMutationTarget(for: archiveURL,
                                             subdir: target.subdir)
-    }
-
-    private func shouldPreferMoveForDroppedURLs(_ urls: [URL],
-                                                destinationDirectory: URL) -> Bool
-    {
-        guard let destinationVolumeURL = volumeURL(for: destinationDirectory) else {
-            return false
-        }
-
-        return urls.allSatisfy { volumeURL(for: $0) == destinationVolumeURL }
-    }
-
-    private func volumeURL(for url: URL) -> URL? {
-        try? url.resourceValues(forKeys: [.volumeURLKey]).volume?.standardizedFileURL
     }
 
     private func sourcePaneController(for info: any NSDraggingInfo) -> FileManagerPaneController? {
@@ -4247,8 +4179,8 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                 return
             }
 
-            let selectionPaths = archiveSelectionPaths(for: urls,
-                                                       targetSubdir: currentTarget.subdir)
+            let selectionPaths = FileOperationArchiveTransferSelection.selectionPaths(for: urls,
+                                                                                      targetSubdir: currentTarget.subdir)
 
             do {
                 try await ArchiveOperationRunner.run(operationTitle: resolvedOperationTitle,
