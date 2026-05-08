@@ -345,33 +345,10 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
                 return
             }
 
-            let openPanel = NSOpenPanel()
-            openPanel.canChooseFiles = true
-            openPanel.canChooseDirectories = true
-            openPanel.allowsMultipleSelection = true
-            openPanel.resolvesAliases = true
-            openPanel.prompt = SZL10n.string("toolbar.add")
-            openPanel.message = SZL10n.string("app.fileManager.selectFilesToAdd")
-            openPanel.directoryURL = suggestedArchiveAddSourceDirectory(for: activePane)
-
-            let handleSelection = { [weak self] in
-                let selectedURLs = openPanel.urls.map(\.standardizedFileURL)
-                guard !selectedURLs.isEmpty else { return }
-                activePane.beginConfirmedArchiveTransfer(selectedURLs,
-                                                         to: target,
-                                                         operation: .copy,
-                                                         sourcePane: nil,
-                                                         parentWindow: self?.window)
-            }
-
-            if let window {
-                openPanel.beginSheetModal(for: window) { response in
-                    guard response == .OK else { return }
-                    handleSelection()
-                }
-            } else if openPanel.runModal() == .OK {
-                handleSelection()
-            }
+            FileManagerArchiveCommandSupport.promptForFilesToAddToOpenArchive(from: activePane,
+                                                                              target: target,
+                                                                              suggestedDirectory: suggestedArchiveAddSourceDirectory(for: activePane),
+                                                                              parentWindow: window)
             return
         }
 
@@ -397,14 +374,9 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
             }
 
             do {
-                try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("progress.compressing"),
-                                                     parentWindow: parentWindow)
-                { session in
-                    try SZArchive.create(atPath: result.archiveURL.path,
-                                         fromPaths: selectedURLs.map(\.path),
-                                         settings: result.settings,
-                                         session: session)
-                }
+                try await FileManagerArchiveCommandSupport.createArchive(from: selectedURLs,
+                                                                         result: result,
+                                                                         parentWindow: parentWindow)
                 activePane.refresh()
                 refreshPaneDisplayingDirectory(result.archiveURL.deletingLastPathComponent())
             } catch {
@@ -439,48 +411,12 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
                                                                     preserveNtSecurityInfo: extractResult.preserveNtSecurityInfo,
                                                                     eliminateDuplicates: extractResult.eliminateDuplicates,
                                                                     inheritDownloadedFileQuarantine: extractResult.inheritDownloadedFileQuarantine)
-                    try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("progress.extracting"),
-                                                         parentWindow: parentWindow)
-                    { session in
-                        try FileManagerPaneController.performPreparedExtraction(prepared, session: session)
-                    }
+                    try await FileManagerArchiveCommandSupport.extractPreparedArchiveItems(prepared,
+                                                                                           parentWindow: parentWindow)
                 } else {
-                    try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("progress.extracting"),
-                                                         parentWindow: parentWindow)
-                    { session in
-                        guard let archiveURL = archiveCandidateURL else {
-                            throw NSError(domain: SZArchiveErrorDomain,
-                                          code: -1,
-                                          userInfo: [NSLocalizedDescriptionKey: SZL10n.string("app.fileManager.selectArchiveToExtract")])
-                        }
-                        let archive = SZArchive()
-                        try archive.open(atPath: archiveURL.path,
-                                         password: extractResult.password,
-                                         session: session)
-                        let archiveItems = try archive.entries(with: session).map(ArchiveItem.init)
-                        let settings = SZExtractionSettings()
-                        settings.overwriteMode = extractResult.overwriteMode
-                        settings.pathMode = extractResult.pathMode
-                        settings.password = extractResult.password
-                        settings.preserveNtSecurityInfo = extractResult.preserveNtSecurityInfo
-                        let pathPrefixToStrip: String? = if extractResult.eliminateDuplicates,
-                                                            extractResult.pathMode != .absolutePaths,
-                                                            extractResult.pathMode != .noPaths
-                        {
-                            ArchiveItem.duplicateRootPrefixToStrip(for: archiveItems,
-                                                                   destinationLeafName: extractResult.destinationURL.lastPathComponent)
-                        } else {
-                            nil
-                        }
-                        settings.pathPrefixToStrip = pathPrefixToStrip
-                        if extractResult.inheritDownloadedFileQuarantine {
-                            settings.sourceArchivePathForQuarantine = archiveURL.path
-                        }
-                        try archive.extract(toPath: extractResult.destinationURL.path,
-                                            settings: settings,
-                                            session: session)
-                        archive.close()
-                    }
+                    try await FileManagerArchiveCommandSupport.extractArchiveCandidate(archiveCandidateURL,
+                                                                                       result: extractResult,
+                                                                                       parentWindow: parentWindow)
                 }
 
                 let postProcessResult: ArchiveExtractionPostProcessResult
@@ -521,25 +457,11 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
             do {
                 if isVirtualLocation {
                     let archive = try activePane.currentArchiveForTest()
-                    try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("progress.testing"),
-                                                         parentWindow: parentWindow)
-                    { session in
-                        try archive.test(with: session)
-                    }
+                    try await FileManagerArchiveCommandSupport.testPreparedArchive(archive,
+                                                                                   parentWindow: parentWindow)
                 } else {
-                    try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("progress.testing"),
-                                                         parentWindow: parentWindow)
-                    { session in
-                        guard let archiveURL = archiveCandidateURL else {
-                            throw NSError(domain: SZArchiveErrorDomain,
-                                          code: -1,
-                                          userInfo: [NSLocalizedDescriptionKey: SZL10n.string("app.fileManager.selectArchiveToTest")])
-                        }
-                        let archive = SZArchive()
-                        try archive.open(atPath: archiveURL.path, session: session)
-                        try archive.test(with: session)
-                        archive.close()
-                    }
+                    try await FileManagerArchiveCommandSupport.testArchiveCandidate(archiveCandidateURL,
+                                                                                    parentWindow: parentWindow)
                 }
                 szPresentMessage(title: SZL10n.string("app.fileManager.testOK"),
                                  message: SZL10n.string("archive.noErrors"),
@@ -1039,22 +961,6 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
                                              sourceArchiveAvailableForMoveToTrash: sourcePane.sourceArchiveURLForPostProcessing() != nil,
                                              sourceArchiveAvailableForQuarantineInheritance: sourcePane.quarantineSourceArchiveURLForExtraction() != nil)
         return await dialog.runModal(for: window)
-    }
-
-    private func archiveExtractionPathPrefixToStrip(for items: [ArchiveItem],
-                                                    destinationURL: URL,
-                                                    pathMode: SZPathMode,
-                                                    eliminateDuplicates: Bool) -> String?
-    {
-        guard eliminateDuplicates,
-              pathMode != .absolutePaths,
-              pathMode != .noPaths
-        else {
-            return nil
-        }
-
-        return ArchiveItem.duplicateRootPrefixToStrip(for: items,
-                                                      destinationLeafName: destinationURL.lastPathComponent)
     }
 
     private func promptForFileOperationDestination(forMove move: Bool,
