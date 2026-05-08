@@ -332,14 +332,15 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
 
     @objc func addToArchive(_: Any?) {
         let activePane = activePane
-        guard activePane.canAddSelectedItemsToArchive() else {
-            if activePane.currentArchiveMutationTarget() == nil {
+        let snapshot = activePane.snapshot
+        guard snapshot.capabilities.canAddSelectedItemsToArchive else {
+            if snapshot.isVirtualLocation, !snapshot.acceptsFilePaste {
                 activePane.showReadOnlyArchiveMutationAlert(action: "Adding files to archive")
             }
             return
         }
 
-        if activePane.isVirtualLocation {
+        if snapshot.isVirtualLocation {
             guard let target = activePane.currentArchiveMutationTarget() else {
                 activePane.showReadOnlyArchiveMutationAlert(action: "Adding files to archive")
                 return
@@ -352,10 +353,10 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
             return
         }
 
-        let selectedURLs = activePane.selectedFileURLs()
+        let selectedURLs = snapshot.selection.fileURLs
         guard !selectedURLs.isEmpty else { return }
 
-        let baseDirectory = activePane.currentDirectoryURL
+        let baseDirectory = snapshot.currentDirectoryURL
         let parentWindow = window
 
         Task { @MainActor [weak self, weak activePane] in
@@ -387,7 +388,8 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
 
     @objc func extractArchive(_: Any?) {
         let activePane = activePane
-        guard activePane.canExtractSelectionOrArchive() else { return }
+        let snapshot = activePane.snapshot
+        guard snapshot.capabilities.canExtractSelectionOrArchive else { return }
 
         Task { @MainActor [weak self, weak activePane] in
             guard let self,
@@ -398,9 +400,9 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
                 return
             }
 
-            let sourceArchiveURL = activePane.sourceArchiveURLForPostProcessing()
-            let isVirtualLocation = activePane.isVirtualLocation
-            let archiveCandidateURL = isVirtualLocation ? nil : activePane.selectedArchiveCandidateURL()
+            let sourceArchiveURL = snapshot.sourceArchiveURLForPostProcessing
+            let isVirtualLocation = snapshot.isVirtualLocation
+            let archiveCandidateURL = isVirtualLocation ? nil : snapshot.selectedArchiveCandidateURL
 
             do {
                 if isVirtualLocation {
@@ -447,10 +449,11 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
 
     @objc func testArchive(_: Any?) {
         let activePane = activePane
-        guard activePane.canTestArchiveSelection() else { return }
+        let snapshot = activePane.snapshot
+        guard snapshot.capabilities.canTestArchiveSelection else { return }
 
-        let isVirtualLocation = activePane.isVirtualLocation
-        let archiveCandidateURL = isVirtualLocation ? nil : activePane.selectedArchiveCandidateURL()
+        let isVirtualLocation = snapshot.isVirtualLocation
+        let archiveCandidateURL = isVirtualLocation ? nil : snapshot.selectedArchiveCandidateURL
 
         Task { @MainActor [weak self] in
             guard let self, let parentWindow = window else { return }
@@ -564,7 +567,7 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
             return
         }
 
-        FileManagerClipboardSupport.copySelection(from: activePane)
+        FileManagerClipboardSupport.copySelection(from: activePane.snapshot)
     }
 
     @objc func paste(_ sender: Any?) {
@@ -661,7 +664,7 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
 
     @objc func showFoldersHistory(_: Any?) {
         let pane = activePane
-        let entries = pane.recentDirectoryHistory()
+        let entries = pane.snapshot.recentDirectoryHistory
         guard !entries.isEmpty, let window else { return }
 
         let controller = FoldersHistoryWindowController(entries: entries)
@@ -709,7 +712,7 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
 
     @objc func saveFavoriteSlot(_ sender: Any?) {
         guard let menuItem = sender as? NSMenuItem else { return }
-        FileManagerFavoriteStore.set(url: activePane.currentDirectoryURL, for: menuItem.tag)
+        FileManagerFavoriteStore.set(url: activePane.snapshot.currentDirectoryURL, for: menuItem.tag)
     }
 
     @objc func switchPanes(_: Any?) {
@@ -748,14 +751,15 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
 
     private func performFileOperation(move: Bool) {
         let pane = activePane
+        let snapshot = pane.snapshot
 
-        if pane.isVirtualLocation {
+        if snapshot.isVirtualLocation {
             if move {
                 showUnsupportedOperationAlert("Moving items from an open archive is not implemented yet. Use Copy to extract them out first.")
                 return
             }
 
-            guard pane.canCopySelection() else { return }
+            guard snapshot.capabilities.canCopySelection else { return }
             guard let unresolvedDestinationTarget = promptForFileOperationDestination(forMove: false, sourcePane: pane) else { return }
 
             let destinationTarget: FileOperationDestinationTarget
@@ -789,7 +793,7 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
             return
         }
 
-        let sourceURLs = pane.selectedFileURLs()
+        let sourceURLs = snapshot.selection.fileURLs
         guard !sourceURLs.isEmpty else { return }
 
         guard let destinationTarget = promptForFileOperationDestination(forMove: move, sourcePane: pane) else { return }
@@ -841,8 +845,10 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
     }
 
     @objc func createFolder(_: Any?) {
-        guard activePane.canCreateFolderHere() else {
-            if activePane.currentArchiveMutationTarget() == nil {
+        let activePane = activePane
+        let snapshot = activePane.snapshot
+        guard snapshot.capabilities.canCreateFolderHere else {
+            if snapshot.isVirtualLocation, !snapshot.acceptsFilePaste {
                 activePane.showReadOnlyArchiveMutationAlert(action: "Creating folders")
             }
             return
@@ -861,7 +867,7 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
     }
 
     @objc func createFile(_: Any?) {
-        guard activePane.canCreateFileHere() else {
+        guard activePane.snapshot.capabilities.canCreateFileHere else {
             showUnsupportedOperationAlert("Creating files inside an open archive is not implemented yet.")
             return
         }
@@ -880,12 +886,13 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
 
     @objc func deleteFiles(_: Any?) {
         let activePane = activePane
-        guard activePane.canDeleteSelection() else { return }
+        guard activePane.snapshot.capabilities.canDeleteSelection else { return }
         activePane.deleteSelection()
     }
 
     private func presentSelectionHash(_ algorithm: FileManagerHashAlgorithm) {
-        guard let item = activePane.selectedSingleFileSystemFile() else { return }
+        let snapshot = activePane.snapshot
+        guard let item = snapshot.selectedSingleFileSystemFile else { return }
 
         let itemName = item.name
         let itemPath = item.url.path
@@ -912,7 +919,7 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
     }
 
     private var commandValidationContext: FileManagerCommandValidationContext {
-        FileManagerCommandValidationContext(activePane: activePane,
+        FileManagerCommandValidationContext(activePaneSnapshot: activePane.snapshot,
                                             isDualPane: isDualPane,
                                             window: window)
     }
@@ -928,46 +935,48 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
     }
 
     private func suggestedArchiveAddSourceDirectory(for targetPane: FileManagerPaneController) -> URL {
-        if let otherPane = inactivePane,
-           !otherPane.isVirtualLocation
+        if let otherSnapshot = inactivePane?.snapshot,
+           !otherSnapshot.isVirtualLocation
         {
-            return otherPane.currentDirectoryURL.standardizedFileURL
+            return otherSnapshot.currentDirectoryURL.standardizedFileURL
         }
 
-        return targetPane.currentDirectoryURL.standardizedFileURL
+        return targetPane.snapshot.currentDirectoryURL.standardizedFileURL
     }
 
     private func suggestedDestinationPath(for sourcePane: FileManagerPaneController) -> String {
-        if let otherPane = inactivePane {
-            if let archivePath = otherPane.currentArchiveDestinationDisplayPath() {
+        if let otherSnapshot = inactivePane?.snapshot {
+            if let archivePath = otherSnapshot.currentArchiveDestinationDisplayPath {
                 return szNormalizedDestinationDisplayPath(archivePath)
             }
 
-            if !otherPane.isVirtualLocation {
-                return szNormalizedDestinationDisplayPath(otherPane.currentDirectoryURL.standardizedFileURL.path)
+            if !otherSnapshot.isVirtualLocation {
+                return szNormalizedDestinationDisplayPath(otherSnapshot.currentDirectoryURL.standardizedFileURL.path)
             }
         }
 
-        return szNormalizedDestinationDisplayPath(sourcePane.currentDirectoryURL.standardizedFileURL.path)
+        return szNormalizedDestinationDisplayPath(sourcePane.snapshot.currentDirectoryURL.standardizedFileURL.path)
     }
 
     private func promptForArchiveDestination(from sourcePane: FileManagerPaneController) async -> ExtractDialogResult? {
-        let dialog = ExtractDialogController(suggestedDestinationURL: sourcePane.currentDirectoryURL,
-                                             baseDirectory: sourcePane.currentDirectoryURL,
-                                             message: sourcePane.extractDialogInfoText(),
-                                             defaultPathMode: sourcePane.isVirtualLocation ? .currentPaths : .fullPaths,
-                                             showsCurrentPathsOption: sourcePane.isVirtualLocation,
-                                             suggestedSplitDestinationName: sourcePane.suggestedExtractDestinationName,
-                                             sourceArchiveAvailableForMoveToTrash: sourcePane.sourceArchiveURLForPostProcessing() != nil,
-                                             sourceArchiveAvailableForQuarantineInheritance: sourcePane.quarantineSourceArchiveURLForExtraction() != nil)
+        let snapshot = sourcePane.snapshot
+        let dialog = ExtractDialogController(suggestedDestinationURL: snapshot.currentDirectoryURL,
+                                             baseDirectory: snapshot.currentDirectoryURL,
+                                             message: snapshot.extractDialogInfoText,
+                                             defaultPathMode: snapshot.isVirtualLocation ? .currentPaths : .fullPaths,
+                                             showsCurrentPathsOption: snapshot.isVirtualLocation,
+                                             suggestedSplitDestinationName: snapshot.suggestedExtractDestinationName,
+                                             sourceArchiveAvailableForMoveToTrash: snapshot.sourceArchiveURLForPostProcessing != nil,
+                                             sourceArchiveAvailableForQuarantineInheritance: snapshot.quarantineSourceArchiveURLForExtraction != nil)
         return await dialog.runModal(for: window)
     }
 
     private func promptForFileOperationDestination(forMove move: Bool,
                                                    sourcePane: FileManagerPaneController) -> FileOperationDestinationTarget?
     {
+        let sourceSnapshot = sourcePane.snapshot
         let defaultPath = suggestedDestinationPath(for: sourcePane)
-        let infoText = fileOperationInfoText(for: sourcePane)
+        let infoText = sourceSnapshot.fileOperationInfoText
 
         let prompt = FileOperationDestinationPrompt(move: move,
                                                     sourcePane: sourcePane,
@@ -976,26 +985,12 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
         { [weak self] destinationTarget in
             guard let self else { return false }
             return validateTransferDestination(destinationTarget,
-                                               sourceURLs: sourcePane.selectedFileURLs(),
+                                               sourceURLs: sourceSnapshot.selection.fileURLs,
                                                for: sourcePane,
                                                move: move)
         }
 
         return prompt.run()
-    }
-
-    private func fileOperationInfoText(for sourcePane: FileManagerPaneController) -> String {
-        var lines: [String] = []
-        lines.append(sourcePane.currentLocationDisplayPath)
-
-        let names = sourcePane.selectedItemNames(limit: 5)
-        lines.append(contentsOf: names.map { "  \($0)" })
-
-        if sourcePane.selectedRealItemCount > names.count {
-            lines.append("  ...")
-        }
-
-        return lines.joined(separator: "\n")
     }
 
     private func validateTransferDestination(_ destinationTarget: FileOperationDestinationTarget,

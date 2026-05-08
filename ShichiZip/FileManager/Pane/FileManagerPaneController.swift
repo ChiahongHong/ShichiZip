@@ -2228,23 +2228,25 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        switch menuItem.action {
+        let capabilities = paneCapabilities
+
+        return switch menuItem.action {
         case #selector(openSelectedItem(_:)):
-            !selectedPaneItems().isEmpty
+            capabilities.canOpenSelection
         case #selector(openInArchiveViewer(_:)):
             selectedArchiveCandidateURL() != nil
         case #selector(compressSelected(_:)):
-            canAddSelectedItemsToArchive()
+            capabilities.canAddSelectedItemsToArchive
         case #selector(extractSelected(_:)), #selector(extractHere(_:)):
-            canExtractSelectionOrArchive()
+            capabilities.canExtractSelectionOrArchive
         case #selector(renameSelected(_:)):
-            canRenameSelection()
+            capabilities.canRenameSelection
         case #selector(deleteSelected(_:)):
-            canDeleteSelection()
+            capabilities.canDeleteSelection
         case #selector(createFolderFromMenu(_:)):
-            canCreateFolderHere()
+            capabilities.canCreateFolderHere
         case #selector(showItemProperties(_:)):
-            !selectedRealPaneItems().isEmpty
+            capabilities.canShowSelectedItemProperties
         default:
             true
         }

@@ -209,24 +209,18 @@ enum FileManagerClipboard {
 
 @MainActor
 enum FileManagerClipboardSupport {
-    static func canCopySelection(from pane: FileManagerPaneController) -> Bool {
-        !pane.isVirtualLocation && !pane.selectedFileURLs().isEmpty
+    static func canCopySelection(from snapshot: FileManagerPaneSnapshot) -> Bool {
+        !snapshot.isVirtualLocation && !snapshot.selection.fileURLs.isEmpty
     }
 
-    static func canPasteFiles(_ sourceURLs: [URL], into pane: FileManagerPaneController) -> Bool {
+    static func canPasteFiles(_ sourceURLs: [URL], into snapshot: FileManagerPaneSnapshot) -> Bool {
         guard !sourceURLs.isEmpty else { return false }
-
-        if pane.isVirtualLocation {
-            return pane.currentArchiveMutationTarget() != nil
-        }
-
-        return true
+        return snapshot.acceptsFilePaste
     }
 
-    static func copySelection(from pane: FileManagerPaneController) {
-        let urls = pane.selectedFileURLs()
-        guard !pane.isVirtualLocation, !urls.isEmpty else { return }
-        FileManagerClipboard.writeFileURLs(urls)
+    static func copySelection(from snapshot: FileManagerPaneSnapshot) {
+        guard canCopySelection(from: snapshot) else { return }
+        FileManagerClipboard.writeFileURLs(snapshot.selection.fileURLs)
     }
 
     static func pasteFiles(_ sourceURLs: [URL],
@@ -352,7 +346,7 @@ enum FileManagerHashAlgorithm {
 
 @MainActor
 struct FileManagerCommandValidationContext {
-    let activePane: FileManagerPaneController
+    let activePaneSnapshot: FileManagerPaneSnapshot
     let isDualPane: Bool
     let window: NSWindow?
 }
@@ -362,39 +356,40 @@ enum FileManagerCommandValidator {
     static func validate(_ item: any NSValidatedUserInterfaceItem,
                          context: FileManagerCommandValidationContext) -> Bool
     {
-        let activePane = context.activePane
+        let activePane = context.activePaneSnapshot
+        let capabilities = activePane.capabilities
 
         switch item.action {
         case #selector(FileManagerWindowController.openSelectedItem(_:)):
-            return activePane.canOpenSelection()
+            return capabilities.canOpenSelection
         case #selector(FileManagerWindowController.openSelectedItemInside(_:)),
              #selector(FileManagerWindowController.openSelectedItemInsideWildcard(_:)),
              #selector(FileManagerWindowController.openSelectedItemInsideParser(_:)):
-            return activePane.canOpenSelectionInside()
+            return capabilities.canOpenSelectionInside
         case #selector(FileManagerWindowController.openSelectedItemOutside(_:)):
-            return activePane.canOpenSelectionOutside()
+            return capabilities.canOpenSelectionOutside
         case #selector(FileManagerWindowController.addToArchive(_:)):
-            return activePane.canAddSelectedItemsToArchive()
+            return capabilities.canAddSelectedItemsToArchive
         case #selector(FileManagerWindowController.extractArchive(_:)):
-            return activePane.canExtractSelectionOrArchive()
+            return capabilities.canExtractSelectionOrArchive
         case #selector(FileManagerWindowController.extractHere(_:)):
-            return activePane.canExtractSelectionOrArchive()
+            return capabilities.canExtractSelectionOrArchive
         case #selector(FileManagerWindowController.testArchive(_:)):
-            return activePane.canTestArchiveSelection()
+            return capabilities.canTestArchiveSelection
         case #selector(FileManagerWindowController.copyFiles(_:)):
-            return activePane.canCopySelection()
+            return capabilities.canCopySelection
         case #selector(FileManagerWindowController.moveFiles(_:)):
-            return activePane.canMoveSelection()
+            return capabilities.canMoveSelection
         case #selector(FileManagerWindowController.renameSelection(_:)):
-            return activePane.canRenameSelection()
+            return capabilities.canRenameSelection
         case #selector(FileManagerWindowController.createFolder(_:)):
-            return activePane.canCreateFolderHere()
+            return capabilities.canCreateFolderHere
         case #selector(FileManagerWindowController.createFile(_:)):
-            return activePane.canCreateFileHere()
+            return capabilities.canCreateFileHere
         case #selector(FileManagerWindowController.deleteFiles(_:)):
-            return activePane.canDeleteSelection()
+            return capabilities.canDeleteSelection
         case #selector(FileManagerWindowController.showProperties(_:)):
-            return activePane.canShowSelectedItemProperties()
+            return capabilities.canShowSelectedItemProperties
         case #selector(FileManagerWindowController.showCRC32Hash(_:)),
              #selector(FileManagerWindowController.showAllHashes(_:)),
              #selector(FileManagerWindowController.showCRC64Hash(_:)),
@@ -406,9 +401,9 @@ enum FileManagerCommandValidator {
              #selector(FileManagerWindowController.showSHA512Hash(_:)),
              #selector(FileManagerWindowController.showSHA3256Hash(_:)),
              #selector(FileManagerWindowController.showBLAKE2spHash(_:)):
-            return activePane.canCalculateSelectionHashes()
+            return capabilities.canCalculateSelectionHashes
         case #selector(FileManagerWindowController.goUpOneLevel(_:)):
-            return activePane.canGoUp()
+            return capabilities.canGoUp
         case #selector(NSText.copy(_:)):
             return FileManagerTextEditingActionDispatcher.firstResponder(in: context.window,
                                                                          supports: #selector(NSText.copy(_:))) ||
@@ -421,11 +416,11 @@ enum FileManagerCommandValidator {
         case #selector(NSText.selectAll(_:)):
             return FileManagerTextEditingActionDispatcher.firstResponder(in: context.window,
                                                                          supports: #selector(NSText.selectAll(_:))) ||
-                activePane.canSelectVisibleItems()
+                capabilities.canSelectVisibleItems
         case #selector(FileManagerWindowController.invertSelection(_:)):
-            return activePane.canSelectVisibleItems()
+            return capabilities.canSelectVisibleItems
         case #selector(FileManagerWindowController.deselectAllItems(_:)):
-            return activePane.canDeselectSelection()
+            return capabilities.canDeselectSelection
         case #selector(FileManagerWindowController.refreshActivePane(_:)),
              #selector(FileManagerWindowController.sortByName(_:)),
              #selector(FileManagerWindowController.sortByType(_:)),
@@ -446,7 +441,7 @@ enum FileManagerCommandValidator {
         case #selector(FileManagerWindowController.openRootFolder(_:)):
             return true
         case #selector(FileManagerWindowController.showFoldersHistory(_:)):
-            return activePane.canShowFoldersHistory()
+            return capabilities.canShowFoldersHistory
         case #selector(FileManagerWindowController.toggleArchiveToolbar(_:)),
              #selector(FileManagerWindowController.toggleStandardToolbar(_:)),
              #selector(FileManagerWindowController.toggleToolbarButtonText(_:)),
@@ -471,7 +466,7 @@ enum FileManagerCommandValidator {
     {
         let isEnabled = validate(menuItem as any NSValidatedUserInterfaceItem,
                                  context: context)
-        let activePane = context.activePane
+        let activePane = context.activePaneSnapshot
 
         switch menuItem.action {
         case #selector(FileManagerWindowController.toggleDualPane(_:)):
