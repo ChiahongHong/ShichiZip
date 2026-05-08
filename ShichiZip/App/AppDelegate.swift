@@ -23,7 +23,7 @@ enum ArchiveExtractionPostProcessor {
 }
 
 @MainActor
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, FileManagerWindowCoordinating {
     private static let disableSmartQuickExtractRevealEnvironmentKey = "SHICHIZIP_DISABLE_SMART_QUICK_EXTRACT_REVEAL"
     private static let quickActionLogPrefix = "QuickActionTransport"
 
@@ -302,8 +302,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return fileManagerWindowControllers.last { $0.window?.isVisible == true } ?? fileManagerWindowControllers.last
     }
 
-    func activeFileManagerWindowControllersForArchiveCoordination() -> [FileManagerWindowController] {
-        activeFileManagerWindowControllers()
+    func archiveCoordinationSnapshots() -> [FileManagerNestedArchiveOpenSnapshot] {
+        activeFileManagerWindowControllers().flatMap { $0.archiveCoordinationSnapshots() }
     }
 
     private func handleQuickActionLaunchURL(_ url: URL) {
@@ -488,7 +488,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func makeFileManagerWindowController() -> FileManagerWindowController {
-        let controller = FileManagerWindowController()
+        let controller = FileManagerWindowController(windowCoordinator: self)
         controller.onWindowWillClose = { [weak self] closingController in
             self?.removeFileManagerWindowController(closingController)
         }

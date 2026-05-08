@@ -6,25 +6,6 @@ import UniformTypeIdentifiers
 class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate, NSTextFieldDelegate, NSMenuItemValidation {
     // MARK: - Types
 
-    private struct StatusSummary {
-        let fileCount: Int
-        let folderCount: Int
-        let fileSize: UInt64
-        let folderSize: UInt64
-
-        var itemCount: Int {
-            fileCount + folderCount
-        }
-
-        var totalSize: UInt64 {
-            fileSize
-        }
-
-        var copyDialogTotalSize: UInt64 {
-            fileSize + folderSize
-        }
-    }
-
     private static let addressBarIconSize: CGFloat = 14
     private static var directorySnapshotQueueLabel: String {
         "\(Bundle.main.bundleIdentifier ?? "ShichiZip").file-manager.directory-snapshot"
@@ -41,6 +22,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     // MARK: - Properties
 
     weak var delegate: FileManagerPaneDelegate?
+    weak var archiveCoordinationProvider: (any FileManagerArchiveCoordinationProviding)?
 
     private var locationIconView: NSImageView!
     private var pathField: NSTextField!
@@ -1224,43 +1206,44 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     func selectedOrDisplayedArchiveEntriesForExtraction() -> [ArchiveItem] {
-        guard let level = archiveStack.last else { return [] }
+        guard let context = currentArchiveExtractionContext else { return [] }
 
-        let indices = Set(archiveEntryIndices(for: archiveItemsForSelectionOrDisplayedItems()).map(\.intValue))
-        return level.allEntries.filter { indices.contains($0.index) }
+        let indices = Set(FileManagerArchiveExtraction.entryIndices(for: archiveItemsForSelectionOrDisplayedItems(),
+                                                                    allEntries: context.allEntries).map(\.intValue))
+        return context.allEntries.filter { indices.contains($0.index) }
     }
 
     func pathPrefixToStripForCurrentExtraction(destinationURL: URL,
                                                pathMode: SZPathMode,
                                                eliminateDuplicates: Bool) -> String?
     {
-        archivePathPrefixToStrip(for: archiveItemsForSelectionOrDisplayedItems(),
-                                 destinationURL: destinationURL,
-                                 pathMode: pathMode,
-                                 eliminateDuplicates: eliminateDuplicates)
+        guard let context = currentArchiveExtractionContext else { return nil }
+
+        return FileManagerArchiveExtraction.pathPrefixToStrip(for: archiveItemsForSelectionOrDisplayedItems(),
+                                                              context: context,
+                                                              destinationURL: destinationURL,
+                                                              pathMode: pathMode,
+                                                              eliminateDuplicates: eliminateDuplicates)
     }
 
     func selectedItemNames(limit: Int? = nil) -> [String] {
-        itemDisplayNames(for: selectedRealPaneItems(), limit: limit)
+        if isInsideArchive {
+            return FileManagerItemPresentation.displayNames(for: selectedArchiveItems(), limit: limit)
+        }
+        return FileManagerItemPresentation.displayNames(for: selectedFileSystemItems(), limit: limit)
     }
 
     func extractDialogInfoText(previewItemLimit: Int = 5) -> String {
         guard isInsideArchive else {
-            return selectedItemsInfoText(previewItemLimit: previewItemLimit)
+            return FileManagerItemPresentation.fileSystemItemsInfoText(location: currentLocationDisplayPath,
+                                                                       items: selectedFileSystemItems(),
+                                                                       previewItemLimit: previewItemLimit)
         }
 
-        let paneItems = paneItemsForSelectionOrDisplayedItems()
-        var lines = copyDialogSummaryLines(for: makeStatusSummary(for: paneItems))
-        if !lines.isEmpty {
-            lines.append("")
-        }
-
-        lines.append(currentLocationDisplayPath)
-        appendItemPreview(for: paneItems,
-                          to: &lines,
-                          limit: previewItemLimit,
-                          appendingDirectorySeparators: true)
-        return lines.joined(separator: "\n")
+        return FileManagerItemPresentation.archiveItemsInfoText(location: currentLocationDisplayPath,
+                                                                items: archiveItemsForSelectionOrDisplayedItems(),
+                                                                previewItemLimit: previewItemLimit,
+                                                                includeSummary: true)
     }
 
     func prepareQuickLookPreviewForFileSystem() throws -> FileManagerQuickLookPreparedPreview? {
@@ -1479,10 +1462,10 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                                                 operation: NSDragOperation,
                                                 session: SZOperationSession) throws
     {
-        try transferDroppedFileURLs(urls.map(\.standardizedFileURL),
-                                    to: destinationDirectory.standardizedFileURL,
-                                    operation: operation,
-                                    session: session)
+        try FileOperationFileSystemTransfer.perform(urls,
+                                                    to: destinationDirectory,
+                                                    operation: operation,
+                                                    session: session)
     }
 
     func canTransferFileSystemItemURLs(_ urls: [URL],
@@ -1605,230 +1588,20 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     private func updateStatusBar() {
-        let displayedSummary: StatusSummary = if isInsideArchive {
-            makeStatusSummary(for: archiveDisplayItems)
+        let displayedSummary = if isInsideArchive {
+            FileManagerItemPresentation.summary(for: archiveDisplayItems)
         } else {
-            makeStatusSummary(for: items)
+            FileManagerItemPresentation.summary(for: items)
         }
 
-        let displayedSummaryText = makeSummaryText(displayedSummary)
-        let selectedItems = selectedRealPaneItems()
-        guard !selectedItems.isEmpty else {
-            statusLabel.stringValue = displayedSummaryText
-            return
-        }
-
-        let selectedSummary = makeStatusSummary(for: selectedItems)
-        let segments = [
-            "\(selectedSummary.itemCount)/\(displayedSummary.itemCount) \(SZL10n.string("app.fileManager.statusSelected")) — \(makeSelectedSummaryText(selectedSummary))",
-            "\(SZL10n.string("app.fileManager.statusTotal")) \(displayedSummaryText)",
-        ]
-
-        statusLabel.stringValue = segments.joined(separator: "  •  ")
-    }
-
-    private func makeStatusSummary(for fileSystemItems: [FileSystemItem]) -> StatusSummary {
-        var fileCount = 0
-        var folderCount = 0
-        var fileSize: UInt64 = 0
-        var folderSize: UInt64 = 0
-
-        for item in fileSystemItems {
-            if item.isDirectory {
-                folderCount += 1
-                folderSize += item.size
-            } else {
-                fileCount += 1
-                fileSize += item.size
-            }
-        }
-
-        return StatusSummary(fileCount: fileCount,
-                             folderCount: folderCount,
-                             fileSize: fileSize,
-                             folderSize: folderSize)
-    }
-
-    private func makeStatusSummary(for archiveItems: [ArchiveItem]) -> StatusSummary {
-        var fileCount = 0
-        var folderCount = 0
-        var fileSize: UInt64 = 0
-        var folderSize: UInt64 = 0
-
-        for item in archiveItems {
-            if item.isDirectory {
-                folderCount += 1
-                folderSize += item.size
-            } else {
-                fileCount += 1
-                fileSize += item.size
-            }
-        }
-
-        return StatusSummary(fileCount: fileCount,
-                             folderCount: folderCount,
-                             fileSize: fileSize,
-                             folderSize: folderSize)
-    }
-
-    private func makeStatusSummary(for paneItems: [PaneItem]) -> StatusSummary {
-        var fileCount = 0
-        var folderCount = 0
-        var fileSize: UInt64 = 0
-        var folderSize: UInt64 = 0
-
-        for paneItem in paneItems {
-            switch paneItem {
-            case .parent:
-                continue
-            case let .archive(item):
-                if item.isDirectory {
-                    folderCount += 1
-                    folderSize += item.size
-                } else {
-                    fileCount += 1
-                    fileSize += item.size
-                }
-            case let .filesystem(item):
-                if item.isDirectory {
-                    folderCount += 1
-                    folderSize += item.size
-                } else {
-                    fileCount += 1
-                    fileSize += item.size
-                }
-            }
-        }
-
-        return StatusSummary(fileCount: fileCount,
-                             folderCount: folderCount,
-                             fileSize: fileSize,
-                             folderSize: folderSize)
-    }
-
-    private func copyDialogSummaryLines(for summary: StatusSummary) -> [String] {
-        var lines: [String] = []
-        if summary.folderCount > 0 {
-            lines.append(copyDialogValuePairLine(title: SZL10n.string("column.folders"),
-                                                 count: summary.folderCount,
-                                                 size: summary.folderSize))
-        }
-        if summary.fileCount > 0 {
-            lines.append(copyDialogValuePairLine(title: SZL10n.string("column.files"),
-                                                 count: summary.fileCount,
-                                                 size: summary.fileSize))
-        }
-        if summary.folderSize > 0, summary.fileSize > 0 {
-            lines.append("\(SZL10n.string("column.size")): \(fileSizeString(summary.copyDialogTotalSize))")
-        }
-        return lines
-    }
-
-    private func copyDialogValuePairLine(title: String, count: Int, size: UInt64) -> String {
-        "\(title): \(count)    ( \(fileSizeString(size)) )"
-    }
-
-    private func fileSizeString(_ size: UInt64) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(clamping: size), countStyle: .file)
-    }
-
-    private func makeSummaryText(_ summary: StatusSummary) -> String {
-        let sizeString = fileSizeString(summary.totalSize)
-        let fileWord = summary.fileCount == 1 ? SZL10n.string("app.fileManager.statusFile") : SZL10n.string("app.fileManager.statusFiles")
-        let folderWord = summary.folderCount == 1 ? SZL10n.string("app.fileManager.statusFolder") : SZL10n.string("app.fileManager.statusFolders")
-        return "\(summary.fileCount) \(fileWord), \(summary.folderCount) \(folderWord) — \(sizeString)"
-    }
-
-    private func makeSelectedSummaryText(_ summary: StatusSummary) -> String {
-        let sizeString = fileSizeString(summary.totalSize)
-        let fileWord = summary.fileCount == 1 ? SZL10n.string("app.fileManager.statusFile") : SZL10n.string("app.fileManager.statusFiles")
-        let folderWord = summary.folderCount == 1 ? SZL10n.string("app.fileManager.statusFolder") : SZL10n.string("app.fileManager.statusFolders")
-
-        switch (summary.fileCount, summary.folderCount) {
-        case (_, 0):
-            return "\(summary.fileCount) \(fileWord), \(sizeString)"
-        case (0, _):
-            return "\(summary.folderCount) \(folderWord)"
-        default:
-            return "\(summary.fileCount) \(fileWord), \(summary.folderCount) \(folderWord), \(sizeString)"
-        }
-    }
-
-    private static func formattedAttributes(_ attributes: UInt32) -> String {
-        guard attributes != 0 else { return "" }
-
-        let windowsAttributeCharacters = Array("RHS8DAdNTsLCOIEVvX.PU.M......B")
-        var remaining = attributes
-        var result = ""
-        let posixAttributes: UInt32?
-
-        if remaining & 0x8000 != 0 {
-            posixAttributes = remaining >> 16
-            if remaining & 0xF000_0000 != 0 {
-                remaining &= 0x3FFF
-            }
+        let selectedSummary: FileManagerItemStatusSummary? = if isInsideArchive {
+            FileManagerItemPresentation.summary(for: selectedArchiveItems())
         } else {
-            posixAttributes = nil
+            FileManagerItemPresentation.summary(for: selectedFileSystemItems())
         }
 
-        for index in windowsAttributeCharacters.indices {
-            let flag = UInt32(1) << UInt32(index)
-            guard remaining & flag != 0 else { continue }
-
-            let character = windowsAttributeCharacters[index]
-            if character != "." {
-                result.append(character)
-                remaining &= ~flag
-            }
-        }
-
-        if remaining != 0 || (result.isEmpty && posixAttributes == nil) {
-            if !result.isEmpty {
-                result.append(" ")
-            }
-            result.append(String(format: "%08X", remaining))
-        }
-
-        if let posixAttributes {
-            if !result.isEmpty {
-                result.append(" ")
-            }
-            result.append(formattedPosixAttributes(posixAttributes))
-        }
-
-        return result
-    }
-
-    private static func formattedPosixAttributes(_ attributes: UInt32) -> String {
-        let typeCharacters = Array("0pc3d5b7-9lBsDEF")
-        var result = String(typeCharacters[Int((attributes >> 12) & 0xF)])
-
-        for shift in stride(from: 6, through: 0, by: -3) {
-            result.append(attributes & (UInt32(1) << UInt32(shift + 2)) != 0 ? "r" : "-")
-            result.append(attributes & (UInt32(1) << UInt32(shift + 1)) != 0 ? "w" : "-")
-            result.append(attributes & (UInt32(1) << UInt32(shift)) != 0 ? "x" : "-")
-        }
-
-        if attributes & 0x800 != 0 {
-            result.replaceSubrange(result.index(result.startIndex, offsetBy: 3) ... result.index(result.startIndex, offsetBy: 3),
-                                   with: attributes & (UInt32(1) << 6) != 0 ? "s" : "S")
-        }
-        if attributes & 0x400 != 0 {
-            result.replaceSubrange(result.index(result.startIndex, offsetBy: 6) ... result.index(result.startIndex, offsetBy: 6),
-                                   with: attributes & (UInt32(1) << 3) != 0 ? "s" : "S")
-        }
-        if attributes & 0x200 != 0 {
-            result.replaceSubrange(result.index(result.startIndex, offsetBy: 9) ... result.index(result.startIndex, offsetBy: 9),
-                                   with: attributes & (UInt32(1) << 0) != 0 ? "t" : "T")
-        }
-
-        let remaining = attributes & ~UInt32(0xFFFF)
-        if remaining != 0 {
-            result.append(" ")
-            result.append(String(format: "%08X", remaining))
-        }
-
-        return result
+        statusLabel.stringValue = FileManagerItemPresentation.statusBarText(displayed: displayedSummary,
+                                                                            selected: selectedSummary)
     }
 
     private func recordDirectoryVisit(_ url: URL) {
@@ -2114,61 +1887,24 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                                 inheritDownloadedFileQuarantine: inheritDownloadedFileQuarantine)
     }
 
-    /// Captures all @MainActor state needed for extraction so the actual bridge call
-    /// can run on a background thread without accessing isolated properties.
-    struct PreparedExtraction: @unchecked Sendable {
-        let archive: SZArchive
-        let entryIndices: [NSNumber]
-        let destinationPath: String
-        let settings: SZExtractionSettings
-    }
-
     func prepareExtraction(to destinationURL: URL,
                            overwriteMode: SZOverwriteMode = .ask,
                            pathMode: SZPathMode = .currentPaths,
                            password: String? = nil,
                            preserveNtSecurityInfo: Bool = false,
                            eliminateDuplicates: Bool = false,
-                           inheritDownloadedFileQuarantine: Bool = SZSettings.bool(.inheritDownloadedFileQuarantine)) throws -> PreparedExtraction
+                           inheritDownloadedFileQuarantine: Bool = SZSettings.bool(.inheritDownloadedFileQuarantine)) throws -> FileManagerPreparedExtraction
     {
         let itemsToExtract = archiveItemsForSelectionOrDisplayedItems()
-        guard !itemsToExtract.isEmpty else {
-            throw paneOperationError(SZL10n.string("app.fileManager.error.noArchiveItemsToExtract"))
-        }
-
-        guard let level = archiveStack.last else {
-            throw paneOperationError(SZL10n.string("app.fileManager.error.noArchiveOpen"))
-        }
-
-        let indices = archiveEntryIndices(for: itemsToExtract)
-        guard !indices.isEmpty else {
-            throw paneOperationError(SZL10n.string("app.fileManager.error.cannotExtractSelected"))
-        }
-
-        let settings = makeArchiveExtractionSettings(overwriteMode: overwriteMode,
-                                                     pathMode: pathMode,
-                                                     password: password,
-                                                     inheritDownloadedFileQuarantine: inheritDownloadedFileQuarantine)
-        settings.pathPrefixToStrip = archivePathPrefixToStrip(for: itemsToExtract,
-                                                              destinationURL: destinationURL,
-                                                              pathMode: pathMode,
-                                                              eliminateDuplicates: eliminateDuplicates)
-        settings.preserveNtSecurityInfo = preserveNtSecurityInfo
-
-        return PreparedExtraction(archive: level.archive,
-                                  entryIndices: indices,
-                                  destinationPath: destinationURL.path,
-                                  settings: settings)
-    }
-
-    /// Executes a previously prepared extraction on any thread.
-    nonisolated static func performPreparedExtraction(_ prepared: PreparedExtraction,
-                                                      session: SZOperationSession?) throws
-    {
-        try prepared.archive.extractEntries(prepared.entryIndices,
-                                            toPath: prepared.destinationPath,
-                                            settings: prepared.settings,
-                                            session: session)
+        return try prepareExtraction(of: itemsToExtract,
+                                     emptySelectionMessage: SZL10n.string("app.fileManager.error.noArchiveItemsToExtract"),
+                                     to: destinationURL,
+                                     overwriteMode: overwriteMode,
+                                     pathMode: pathMode,
+                                     password: password,
+                                     preserveNtSecurityInfo: preserveNtSecurityInfo,
+                                     eliminateDuplicates: eliminateDuplicates,
+                                     inheritDownloadedFileQuarantine: inheritDownloadedFileQuarantine)
     }
 
     func testCurrentArchive(session: SZOperationSession? = nil) throws {
@@ -2194,56 +1930,83 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                                        password: String? = nil,
                                        preserveNtSecurityInfo: Bool = false,
                                        eliminateDuplicates: Bool = false,
-                                       inheritDownloadedFileQuarantine: Bool = SZSettings.bool(.inheritDownloadedFileQuarantine)) throws -> PreparedExtraction
+                                       inheritDownloadedFileQuarantine: Bool = SZSettings.bool(.inheritDownloadedFileQuarantine)) throws -> FileManagerPreparedExtraction
     {
         let selectedItems = selectedArchiveItems()
-        guard !selectedItems.isEmpty else {
-            throw paneOperationError(SZL10n.string("app.fileManager.error.selectArchiveItems"))
+        return try prepareExtraction(of: selectedItems,
+                                     emptySelectionMessage: SZL10n.string("app.fileManager.error.selectArchiveItems"),
+                                     to: destinationURL,
+                                     overwriteMode: overwriteMode,
+                                     pathMode: pathMode,
+                                     password: password,
+                                     preserveNtSecurityInfo: preserveNtSecurityInfo,
+                                     eliminateDuplicates: eliminateDuplicates,
+                                     inheritDownloadedFileQuarantine: inheritDownloadedFileQuarantine)
+    }
+
+    private var currentArchiveExtractionContext: FileManagerArchiveExtractionContext? {
+        guard let level = archiveStack.last else { return nil }
+
+        return FileManagerArchiveExtractionContext(archive: level.archive,
+                                                   allEntries: level.allEntries,
+                                                   currentSubdir: level.currentSubdir,
+                                                   quarantineSourceArchivePath: quarantineSourceArchiveURLForExtraction()?.path)
+    }
+
+    private func prepareExtraction(of itemsToExtract: [ArchiveItem],
+                                   emptySelectionMessage: String,
+                                   to destinationURL: URL,
+                                   overwriteMode: SZOverwriteMode,
+                                   pathMode: SZPathMode,
+                                   password: String?,
+                                   preserveNtSecurityInfo: Bool,
+                                   eliminateDuplicates: Bool,
+                                   inheritDownloadedFileQuarantine: Bool) throws -> FileManagerPreparedExtraction
+    {
+        guard !itemsToExtract.isEmpty else {
+            throw paneOperationError(emptySelectionMessage)
         }
 
-        guard let level = archiveStack.last else {
+        guard let context = currentArchiveExtractionContext else {
             throw paneOperationError(SZL10n.string("app.fileManager.error.noArchiveOpen"))
         }
 
-        let indices = archiveEntryIndices(for: selectedItems)
-        guard !indices.isEmpty else {
+        guard let preparedExtraction = FileManagerArchiveExtraction.prepare(items: itemsToExtract,
+                                                                            context: context,
+                                                                            destinationURL: destinationURL,
+                                                                            overwriteMode: overwriteMode,
+                                                                            pathMode: pathMode,
+                                                                            password: password,
+                                                                            preserveNtSecurityInfo: preserveNtSecurityInfo,
+                                                                            eliminateDuplicates: eliminateDuplicates,
+                                                                            inheritDownloadedFileQuarantine: inheritDownloadedFileQuarantine)
+        else {
             throw paneOperationError(SZL10n.string("app.fileManager.error.cannotExtractSelected"))
         }
 
-        let settings = makeArchiveExtractionSettings(overwriteMode: overwriteMode,
-                                                     pathMode: pathMode,
-                                                     password: password,
-                                                     inheritDownloadedFileQuarantine: inheritDownloadedFileQuarantine)
-        settings.pathPrefixToStrip = archivePathPrefixToStrip(for: selectedItems,
-                                                              destinationURL: destinationURL,
-                                                              pathMode: pathMode,
-                                                              eliminateDuplicates: eliminateDuplicates)
-        settings.preserveNtSecurityInfo = preserveNtSecurityInfo
-
-        return PreparedExtraction(archive: level.archive,
-                                  entryIndices: indices,
-                                  destinationPath: destinationURL.path,
-                                  settings: settings)
+        return preparedExtraction
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        switch menuItem.action {
+        let capabilities = paneCapabilities
+
+        return switch menuItem.action {
         case #selector(openSelectedItem(_:)):
-            !selectedPaneItems().isEmpty
+            capabilities.canOpenSelection
         case #selector(openInArchiveViewer(_:)):
             selectedArchiveCandidateURL() != nil
         case #selector(compressSelected(_:)):
-            canAddSelectedItemsToArchive()
+            capabilities.canAddSelectedItemsToArchive
         case #selector(extractSelected(_:)), #selector(extractHere(_:)):
-            canExtractSelectionOrArchive()
+            capabilities.canExtractSelectionOrArchive
         case #selector(renameSelected(_:)):
-            canRenameSelection()
+            capabilities.canRenameSelection
         case #selector(deleteSelected(_:)):
-            canDeleteSelection()
+            capabilities.canDeleteSelection
         case #selector(createFolderFromMenu(_:)):
-            canCreateFolderHere()
+            capabilities.canCreateFolderHere
         case #selector(showItemProperties(_:)):
-            !selectedRealPaneItems().isEmpty
+            capabilities.canShowSelectedItemProperties
         default:
             true
         }
@@ -2370,51 +2133,6 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         return selectedItems.isEmpty ? archiveDisplayItems : selectedItems
     }
 
-    private func selectedItemsInfoText(previewItemLimit: Int) -> String {
-        var lines: [String] = []
-        lines.append(currentLocationDisplayPath)
-        appendItemPreview(for: selectedRealPaneItems(), to: &lines, limit: previewItemLimit)
-        return lines.joined(separator: "\n")
-    }
-
-    private func appendItemPreview(for paneItems: [PaneItem],
-                                   to lines: inout [String],
-                                   limit: Int,
-                                   appendingDirectorySeparators: Bool = false)
-    {
-        let names = itemDisplayNames(for: paneItems,
-                                     limit: limit,
-                                     appendingDirectorySeparators: appendingDirectorySeparators)
-        lines.append(contentsOf: names.map { "  \($0)" })
-        if paneItems.count > names.count {
-            lines.append("  ...")
-        }
-    }
-
-    private func itemDisplayNames(for paneItems: [PaneItem],
-                                  limit: Int? = nil,
-                                  appendingDirectorySeparators: Bool = false) -> [String]
-    {
-        let visibleItems = limit.map { Array(paneItems.prefix($0)) } ?? paneItems
-        return visibleItems.compactMap { itemDisplayName(for: $0, appendingDirectorySeparator: appendingDirectorySeparators) }
-    }
-
-    private func itemDisplayName(for paneItem: PaneItem, appendingDirectorySeparator: Bool) -> String? {
-        switch paneItem {
-        case .parent:
-            nil
-        case let .filesystem(item):
-            itemDisplayName(item.name, isDirectory: item.isDirectory, appendingDirectorySeparator: appendingDirectorySeparator)
-        case let .archive(item):
-            itemDisplayName(item.name, isDirectory: item.isDirectory, appendingDirectorySeparator: appendingDirectorySeparator)
-        }
-    }
-
-    private func itemDisplayName(_ name: String, isDirectory: Bool, appendingDirectorySeparator: Bool) -> String {
-        guard appendingDirectorySeparator, isDirectory, !name.hasSuffix("/") else { return name }
-        return name + "/"
-    }
-
     private func currentArchiveDisplayPathPrefix() -> String {
         archiveStack.last?.displayPathPrefix ?? currentDirectory.path
     }
@@ -2453,18 +2171,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     private func allVisibleArchiveCoordinationSnapshots() -> [FileManagerNestedArchiveOpenSnapshot] {
-        guard let appDelegate = NSApp.delegate as? AppDelegate else {
-            return archiveCoordinationSnapshots()
-        }
-
-        var snapshots: [FileManagerNestedArchiveOpenSnapshot] = []
-        for windowController in appDelegate.activeFileManagerWindowControllersForArchiveCoordination() {
-            for paneController in windowController.fileManagerPaneControllersForArchiveCoordination() {
-                snapshots.append(contentsOf: paneController.archiveCoordinationSnapshots())
-            }
-        }
-
-        return snapshots
+        archiveCoordinationProvider?.archiveCoordinationSnapshots() ?? archiveCoordinationSnapshots()
     }
 
     private var coordinatedArchiveLocation: FileManagerCoordinatedArchiveLocation? {
@@ -2956,25 +2663,6 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         }
     }
 
-    private func archiveSelectionPaths(for urls: [URL],
-                                       targetSubdir: String) -> [String]
-    {
-        var seenPaths = Set<String>()
-        var selectionPaths: [String] = []
-
-        for url in urls {
-            let leafName = url.lastPathComponent
-            guard !leafName.isEmpty else { continue }
-
-            let path = targetSubdir.isEmpty ? leafName : targetSubdir + "/" + leafName
-            let normalizedPath = normalizeArchivePath(path)
-            guard seenPaths.insert(normalizedPath).inserted else { continue }
-            selectionPaths.append(normalizedPath)
-        }
-
-        return selectionPaths
-    }
-
     @discardableResult
     private func openExternallyIfPossible(_ url: URL,
                                           preservingTemporaryDirectory temporaryDirectory: URL? = nil) -> Bool
@@ -3035,82 +2723,6 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         return false
     }
 
-    private func makeArchiveExtractionSettings(overwriteMode: SZOverwriteMode,
-                                               pathMode: SZPathMode,
-                                               password: String? = nil,
-                                               inheritDownloadedFileQuarantine: Bool = SZSettings.bool(.inheritDownloadedFileQuarantine)) -> SZExtractionSettings
-    {
-        let settings = SZExtractionSettings()
-        settings.overwriteMode = overwriteMode
-        settings.pathMode = pathMode
-        if let password, !password.isEmpty {
-            settings.password = password
-        }
-        if inheritDownloadedFileQuarantine {
-            settings.sourceArchivePathForQuarantine = quarantineSourceArchiveURLForExtraction()?.path
-        }
-        if pathMode == .currentPaths,
-           let level = archiveStack.last,
-           !level.currentSubdir.isEmpty
-        {
-            settings.pathPrefixToStrip = level.currentSubdir
-        }
-        return settings
-    }
-
-    private func archivePathPrefixToStrip(for itemsToExtract: [ArchiveItem],
-                                          destinationURL: URL,
-                                          pathMode: SZPathMode,
-                                          eliminateDuplicates: Bool) -> String?
-    {
-        let basePrefix: String? = if pathMode == .currentPaths,
-                                     let level = archiveStack.last,
-                                     !level.currentSubdir.isEmpty
-        {
-            level.currentSubdir
-        } else {
-            nil
-        }
-
-        guard eliminateDuplicates,
-              pathMode != .absolutePaths,
-              pathMode != .noPaths,
-              let duplicatePrefix = ArchiveItem.duplicateRootPrefixToStrip(for: itemsToExtract,
-                                                                           destinationLeafName: destinationURL.lastPathComponent,
-                                                                           removingPrefix: basePrefix)
-        else {
-            return basePrefix
-        }
-
-        return duplicatePrefix
-    }
-
-    private func archiveEntryIndices(for selectedItems: [ArchiveItem]) -> [NSNumber] {
-        guard let level = archiveStack.last else { return [] }
-
-        var indices = Set<Int>()
-
-        for item in selectedItems {
-            if item.index >= 0 {
-                indices.insert(item.index)
-            }
-
-            if item.isDirectory || item.index < 0 {
-                let directoryPath = normalizeArchivePath(item.path)
-                let prefix = directoryPath.isEmpty ? "" : directoryPath + "/"
-
-                for entry in level.allEntries where entry.index >= 0 {
-                    let entryPath = normalizeArchivePath(entry.path)
-                    if entryPath == directoryPath || (!prefix.isEmpty && entryPath.hasPrefix(prefix)) {
-                        indices.insert(entry.index)
-                    }
-                }
-            }
-        }
-
-        return indices.sorted().map { NSNumber(value: $0) }
-    }
-
     private func normalizeArchivePath(_ path: String) -> String {
         var normalized = path
         while normalized.hasSuffix("/") {
@@ -3144,28 +2756,16 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                                      eliminateDuplicates: Bool,
                                      inheritDownloadedFileQuarantine: Bool) throws
     {
-        guard let level = archiveStack.last else {
-            throw paneOperationError(SZL10n.string("app.fileManager.error.noArchiveOpen"))
-        }
-
-        let indices = archiveEntryIndices(for: itemsToExtract)
-        guard !indices.isEmpty else {
-            throw paneOperationError(SZL10n.string("app.fileManager.error.cannotExtractSelected"))
-        }
-
-        let settings = makeArchiveExtractionSettings(overwriteMode: overwriteMode,
-                                                     pathMode: pathMode,
-                                                     password: password,
-                                                     inheritDownloadedFileQuarantine: inheritDownloadedFileQuarantine)
-        settings.pathPrefixToStrip = archivePathPrefixToStrip(for: itemsToExtract,
-                                                              destinationURL: destinationURL,
-                                                              pathMode: pathMode,
-                                                              eliminateDuplicates: eliminateDuplicates)
-        settings.preserveNtSecurityInfo = preserveNtSecurityInfo
-        try level.archive.extractEntries(indices,
-                                         toPath: destinationURL.path,
-                                         settings: settings,
-                                         session: session)
+        let preparedExtraction = try prepareExtraction(of: itemsToExtract,
+                                                       emptySelectionMessage: SZL10n.string("app.fileManager.error.cannotExtractSelected"),
+                                                       to: destinationURL,
+                                                       overwriteMode: overwriteMode,
+                                                       pathMode: pathMode,
+                                                       password: password,
+                                                       preserveNtSecurityInfo: preserveNtSecurityInfo,
+                                                       eliminateDuplicates: eliminateDuplicates,
+                                                       inheritDownloadedFileQuarantine: inheritDownloadedFileQuarantine)
+        try preparedExtraction.perform(session: session)
     }
 
     private func paneOperationError(_ description: String) -> NSError {
@@ -3762,7 +3362,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
             itemAccessed = ai.accessedDate.map { dateFormatter.string(from: $0) } ?? ""
             itemChanged = ai.propertyValues[FileManagerColumnID.changed.rawValue] ?? ""
             itemPackedSize = ai.isDirectory ? "" : ByteCountFormatter.string(fromByteCount: Int64(ai.packedSize), countStyle: .file)
-            itemAttributes = Self.formattedAttributes(ai.attributes)
+            itemAttributes = FileManagerItemPresentation.formattedAttributes(ai.attributes)
             itemInode = ai.propertyValues[FileManagerColumnID.inode.rawValue] ?? ""
             itemLinks = ai.propertyValues[FileManagerColumnID.links.rawValue] ?? ""
             itemEncrypted = ai.isEncrypted ? "+" : "-"
@@ -3783,7 +3383,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
             itemAccessed = item.accessedDate.map { dateFormatter.string(from: $0) } ?? ""
             itemChanged = item.changedDate.map { dateFormatter.string(from: $0) } ?? ""
             itemPackedSize = item.formattedPackedSize
-            itemAttributes = Self.formattedAttributes(item.attributes)
+            itemAttributes = FileManagerItemPresentation.formattedAttributes(item.attributes)
             itemInode = item.inode.map(String.init) ?? ""
             itemLinks = item.links.map(String.init) ?? ""
             itemEncrypted = ""
@@ -4076,28 +3676,10 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     private func resolvedDropOperation(for info: any NSDraggingInfo,
                                        destinationDirectory: URL) -> NSDragOperation
     {
-        if pasteboardContainsFilePromises(info.draggingPasteboard) {
-            return .copy
-        }
-
-        let sourceMask = info.draggingSourceOperationMask
-        let canCopy = sourceMask.contains(.copy)
-        let canMove = sourceMask.contains(.move)
-
-        switch (canCopy, canMove) {
-        case (false, false):
-            return []
-        case (true, false):
-            return .copy
-        case (false, true):
-            return .move
-        case (true, true):
-            let urls = droppedFileURLs(from: info)
-            guard !urls.isEmpty else {
-                return .move
-            }
-            return shouldPreferMoveForDroppedURLs(urls, destinationDirectory: destinationDirectory) ? .move : .copy
-        }
+        FileOperationDropResolver.fileSystemDropOperation(sourceMask: info.draggingSourceOperationMask,
+                                                          containsFilePromises: pasteboardContainsFilePromises(info.draggingPasteboard),
+                                                          droppedFileURLs: droppedFileURLs(from: info),
+                                                          destinationDirectory: destinationDirectory)
     }
 
     private func takeResolvedDropOperation(for info: any NSDraggingInfo,
@@ -4115,25 +3697,8 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     private func resolvedArchiveDropOperation(for info: any NSDraggingInfo) -> NSDragOperation {
-        if pasteboardContainsFilePromises(info.draggingPasteboard) {
-            return .copy
-        }
-
-        let sourceMask = info.draggingSourceOperationMask
-        let canCopy = sourceMask.contains(.copy)
-        let canMove = sourceMask.contains(.move)
-
-        switch (canCopy, canMove) {
-        case (false, false):
-            return []
-        case (true, false):
-            return .copy
-        case (false, true):
-            return .move
-        case (true, true):
-            // Default archive drops to copy to avoid deleting the source unexpectedly.
-            return .copy
-        }
+        FileOperationDropResolver.archiveDropOperation(sourceMask: info.draggingSourceOperationMask,
+                                                       containsFilePromises: pasteboardContainsFilePromises(info.draggingPasteboard))
     }
 
     private func takeResolvedArchiveDropOperation(for info: any NSDraggingInfo) -> NSDragOperation {
@@ -4177,20 +3742,6 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                                             subdir: target.subdir)
     }
 
-    private func shouldPreferMoveForDroppedURLs(_ urls: [URL],
-                                                destinationDirectory: URL) -> Bool
-    {
-        guard let destinationVolumeURL = volumeURL(for: destinationDirectory) else {
-            return false
-        }
-
-        return urls.allSatisfy { volumeURL(for: $0) == destinationVolumeURL }
-    }
-
-    private func volumeURL(for url: URL) -> URL? {
-        try? url.resourceValues(forKeys: [.volumeURLKey]).volume?.standardizedFileURL
-    }
-
     private func sourcePaneController(for info: any NSDraggingInfo) -> FileManagerPaneController? {
         guard let sourceTableView = info.draggingSource as? NSTableView else {
             return nil
@@ -4214,10 +3765,10 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                                                      parentWindow: view.window,
                                                      deferredDisplay: true)
                 { session in
-                    try self.transferDroppedFileURLs(urls,
-                                                     to: destinationDirectory,
-                                                     operation: operation,
-                                                     session: session)
+                    try FileOperationFileSystemTransfer.perform(urls,
+                                                                to: destinationDirectory,
+                                                                operation: operation,
+                                                                session: session)
                 }
 
                 refresh()
@@ -4351,8 +3902,8 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                 return
             }
 
-            let selectionPaths = archiveSelectionPaths(for: urls,
-                                                       targetSubdir: currentTarget.subdir)
+            let selectionPaths = FileOperationArchiveTransferSelection.selectionPaths(for: urls,
+                                                                                      targetSubdir: currentTarget.subdir)
 
             do {
                 try await ArchiveOperationRunner.run(operationTitle: resolvedOperationTitle,
@@ -4410,138 +3961,6 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
             lines.append(SZL10n.string("app.fileManager.archiveTransfer.sourceRemovalWarning"))
         }
         return lines.joined(separator: "\n")
-    }
-
-    private nonisolated func transferDroppedFileURLs(_ urls: [URL],
-                                                     to destinationDirectory: URL,
-                                                     operation: NSDragOperation,
-                                                     session: SZOperationSession) throws
-    {
-        let fileManager = FileManager.default
-        var skipAll = false
-        var overwriteAll = false
-
-        for (index, sourceURL) in urls.enumerated() {
-            if session.shouldCancel() {
-                return
-            }
-
-            let destinationFileURL = destinationDirectory
-                .appendingPathComponent(sourceURL.lastPathComponent)
-                .standardizedFileURL
-
-            if sourceURL == destinationFileURL {
-                continue
-            }
-
-            let fraction = Double(index) / Double(urls.count)
-            session.reportProgressFraction(fraction)
-            session.reportCurrentFileName(sourceURL.lastPathComponent)
-
-            if fileManager.fileExists(atPath: destinationFileURL.path) {
-                if skipAll { continue }
-                if !overwriteAll {
-                    let choice = session.requestChoice(with: .warning,
-                                                       title: "File already exists",
-                                                       message: overwritePromptMessage(sourceURL: sourceURL,
-                                                                                       destinationURL: destinationFileURL,
-                                                                                       fileManager: fileManager),
-                                                       buttonTitles: ["Replace", "Replace All", "Skip", "Skip All", "Cancel"])
-                    switch choice {
-                    case 0:
-                        break
-                    case 1:
-                        overwriteAll = true
-                    case 2:
-                        continue
-                    case 3:
-                        skipAll = true
-                        continue
-                    default:
-                        return
-                    }
-                }
-
-                try fileManager.removeItem(at: destinationFileURL)
-            }
-
-            if operation == .move {
-                try moveDroppedItemPreservingMetadata(from: sourceURL, to: destinationFileURL)
-            } else {
-                try copyDroppedItemPreservingMetadata(from: sourceURL, to: destinationFileURL)
-            }
-        }
-
-        session.reportProgressFraction(1.0)
-    }
-
-    private nonisolated func overwritePromptMessage(sourceURL: URL,
-                                                    destinationURL: URL,
-                                                    fileManager: FileManager) -> String
-    {
-        let sourceAttributes = try? fileManager.attributesOfItem(atPath: sourceURL.path)
-        let destinationAttributes = try? fileManager.attributesOfItem(atPath: destinationURL.path)
-        // FileAttributeKey.size is stored as NSNumber.
-        let sourceSize = (sourceAttributes?[.size] as? NSNumber)?.uint64Value ?? 0
-        let destinationSize = (destinationAttributes?[.size] as? NSNumber)?.uint64Value ?? 0
-        let sourceDate = sourceAttributes?[.modificationDate] as? Date
-        let destinationDate = destinationAttributes?[.modificationDate] as? Date
-        let dateFormatter = FileManagerViewPreferences.makeDateFormatter(dateStyle: .medium,
-                                                                         timeStyle: .medium)
-
-        return """
-        Destination: \(destinationURL.lastPathComponent)
-        Size: \(ByteCountFormatter.string(fromByteCount: Int64(destinationSize), countStyle: .file))  Modified: \(destinationDate.map { dateFormatter.string(from: $0) } ?? "—")
-
-        Source: \(sourceURL.lastPathComponent)
-        Size: \(ByteCountFormatter.string(fromByteCount: Int64(sourceSize), countStyle: .file))  Modified: \(sourceDate.map { dateFormatter.string(from: $0) } ?? "—")
-        """
-    }
-
-    private nonisolated func moveDroppedItemPreservingMetadata(from sourceURL: URL,
-                                                               to destinationURL: URL) throws
-    {
-        do {
-            try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
-            return
-        } catch {
-            if FileManager.default.fileExists(atPath: destinationURL.path) {
-                throw error
-            }
-        }
-
-        try copyDroppedItemPreservingMetadata(from: sourceURL, to: destinationURL)
-        try FileManager.default.removeItem(at: sourceURL)
-    }
-
-    private nonisolated func copyDroppedItemPreservingMetadata(from sourceURL: URL,
-                                                               to destinationURL: URL) throws
-    {
-        let cloneResult = sourceURL.path.withCString { sourcePath in
-            destinationURL.path.withCString { destinationPath in
-                copyfile(sourcePath,
-                         destinationPath,
-                         nil,
-                         copyfile_flags_t(COPYFILE_ALL | COPYFILE_CLONE_FORCE))
-            }
-        }
-        if cloneResult == 0 {
-            return
-        }
-
-        let copyResult = sourceURL.path.withCString { sourcePath in
-            destinationURL.path.withCString { destinationPath in
-                copyfile(sourcePath,
-                         destinationPath,
-                         nil,
-                         copyfile_flags_t(COPYFILE_ALL))
-            }
-        }
-        if copyResult == 0 {
-            return
-        }
-
-        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
     }
 
     private func archivePromiseFileType(for item: ArchiveItem) -> String {
@@ -4870,7 +4289,7 @@ extension FileManagerPaneController {
 // MARK: - NSMenuDelegate (auto-select row on right-click)
 
 extension FileManagerPaneController {
-    private func archiveCoordinationSnapshots() -> [FileManagerNestedArchiveOpenSnapshot] {
+    func archiveCoordinationSnapshots() -> [FileManagerNestedArchiveOpenSnapshot] {
         archiveStack.map { level in
             let isDirty = level.nestedWriteBackInfo.flatMap { writeBackInfo in
                 FileManagerArchiveFileFingerprint.captureIfPossible(for: URL(fileURLWithPath: level.archivePath).standardizedFileURL)
@@ -5088,7 +4507,7 @@ extension FileManagerPaneController {
                     try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("progress.extracting"),
                                                          parentWindow: parentWindow)
                     { session in
-                        try FileManagerPaneController.performPreparedExtraction(prepared, session: session)
+                        try prepared.perform(session: session)
                     }
                 } catch {
                     showErrorAlert(error)
@@ -5274,52 +4693,16 @@ extension FileManagerPaneController {
 
         switch item {
         case let .filesystem(fileSystemItem):
-            let url = fileSystemItem.url
-            let resourceValues = try? url.resourceValues(forKeys: [
-                .fileSizeKey, .isDirectoryKey, .contentModificationDateKey,
-                .creationDateKey, .fileResourceTypeKey,
-            ])
-
-            let size = ByteCountFormatter.string(fromByteCount: Int64(resourceValues?.fileSize ?? 0), countStyle: .file)
-            let dateFormatter = FileManagerViewPreferences.makeDateFormatter(dateStyle: .long,
-                                                                             timeStyle: .medium)
-            let details = """
-            Type: \(resourceValues?.isDirectory == true ? "Folder" : url.pathExtension.uppercased())
-            Size: \(size)
-            Modified: \(resourceValues?.contentModificationDate.map { dateFormatter.string(from: $0) } ?? "—")
-            Created: \(resourceValues?.creationDate.map { dateFormatter.string(from: $0) } ?? "—")
-            """
-            szShowDetailsDialog(title: url.lastPathComponent,
-                                details: details,
+            let details = FileManagerItemPresentation.details(for: fileSystemItem)
+            szShowDetailsDialog(title: details.title,
+                                details: details.details,
                                 for: view.window)
 
         case let .archive(archiveItem):
-            let dateFormatter = FileManagerViewPreferences.makeDateFormatter(dateStyle: .long,
-                                                                             timeStyle: .medium)
-            let sizeText = archiveItem.isDirectory
-                ? "—"
-                : ByteCountFormatter.string(fromByteCount: Int64(archiveItem.size), countStyle: .file)
-            let packedText = archiveItem.isDirectory
-                ? "—"
-                : ByteCountFormatter.string(fromByteCount: Int64(archiveItem.packedSize), countStyle: .file)
-            let typeText: String = if archiveItem.isDirectory {
-                archiveItem.index >= 0 ? "Folder in Archive" : "Virtual Folder in Archive"
-            } else {
-                archiveItem.method.isEmpty ? "File in Archive" : archiveItem.method
-            }
-
-            let details = """
-            Type: \(typeText)
-            Path: \(archiveItem.path)
-            Size: \(sizeText)
-            Packed Size: \(packedText)
-            Modified: \(archiveItem.modifiedDate.map { dateFormatter.string(from: $0) } ?? "—")
-            Created: \(archiveItem.createdDate.map { dateFormatter.string(from: $0) } ?? "—")
-            Encrypted: \(archiveItem.isEncrypted ? "Yes" : "No")
-            CRC: \(archiveItem.crc == 0 ? "—" : String(format: "%08X", archiveItem.crc))
-            """
-            szShowDetailsDialog(title: archiveItem.name,
-                                details: details,
+            let details = FileManagerItemPresentation.details(for: archiveItem,
+                                                              entryProperties: archiveStack.last?.entryProperties ?? [])
+            szShowDetailsDialog(title: details.title,
+                                details: details.details,
                                 for: view.window)
 
         case .parent:

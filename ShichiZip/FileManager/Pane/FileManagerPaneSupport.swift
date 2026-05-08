@@ -1,16 +1,110 @@
 import Cocoa
 
-struct FileManagerQuickLookPreparedItem {
-    let url: URL
-    let title: String?
-    let sourceFrameOnScreen: NSRect
-    let transitionImage: NSImage?
-    let transitionContentRect: NSRect
-}
+@MainActor
+struct FileManagerPaneRoutingContext {
+    let leftPane: FileManagerPaneController
+    let rightPane: FileManagerPaneController
+    let isDualPane: Bool
+    let trackedActivePane: FileManagerPaneController?
+    let firstResponderView: NSView?
 
-struct FileManagerQuickLookPreparedPreview {
-    let items: [FileManagerQuickLookPreparedItem]
-    let temporaryDirectories: [URL]
+    var activePane: FileManagerPaneController {
+        if !isDualPane {
+            return leftPane
+        }
+
+        if let firstResponderPane {
+            return firstResponderPane
+        }
+
+        if let trackedActivePane {
+            return trackedActivePane
+        }
+
+        return leftPane
+    }
+
+    var inactivePane: FileManagerPaneController? {
+        guard isDualPane else { return nil }
+        return activePane === leftPane ? rightPane : leftPane
+    }
+
+    func normalizedTrackedPane(for pane: FileManagerPaneController) -> FileManagerPaneController {
+        pane === rightPane ? rightPane : leftPane
+    }
+
+    func targetPaneForRevealingFileSystemItems(_ standardizedURLs: [URL]) -> FileManagerPaneController {
+        guard let firstURL = standardizedURLs.first else {
+            return activePane
+        }
+
+        let parentDirectory = firstURL.deletingLastPathComponent().standardizedFileURL
+        return paneDisplayingDirectory(parentDirectory) ?? activePane
+    }
+
+    func targetPaneForOpeningFileSystemItem(_ standardizedURL: URL,
+                                            isDirectory: Bool) -> FileManagerPaneController
+    {
+        let displayedDirectory = isDirectory
+            ? standardizedURL
+            : standardizedURL.deletingLastPathComponent().standardizedFileURL
+
+        return paneDisplayingDirectory(displayedDirectory) ?? activePane
+    }
+
+    func refreshPaneDisplayingDirectory(_ directoryURL: URL) {
+        let standardizedDirectory = directoryURL.standardizedFileURL
+
+        if !leftPane.isVirtualLocation,
+           leftPane.currentDirectoryURL.standardizedFileURL == standardizedDirectory
+        {
+            leftPane.refresh()
+        }
+
+        if isDualPane,
+           !rightPane.isVirtualLocation,
+           rightPane.currentDirectoryURL.standardizedFileURL == standardizedDirectory
+        {
+            rightPane.refresh()
+        }
+    }
+
+    private var firstResponderPane: FileManagerPaneController? {
+        guard isDualPane,
+              let firstResponderView
+        else {
+            return nil
+        }
+
+        if firstResponderView === rightPane.view || firstResponderView.isDescendant(of: rightPane.view) {
+            return rightPane
+        }
+
+        if firstResponderView === leftPane.view || firstResponderView.isDescendant(of: leftPane.view) {
+            return leftPane
+        }
+
+        return nil
+    }
+
+    private func paneDisplayingDirectory(_ directoryURL: URL) -> FileManagerPaneController? {
+        let standardizedDirectory = directoryURL.standardizedFileURL
+
+        if !leftPane.isVirtualLocation,
+           leftPane.currentDirectoryURL.standardizedFileURL == standardizedDirectory
+        {
+            return leftPane
+        }
+
+        if isDualPane,
+           !rightPane.isVirtualLocation,
+           rightPane.currentDirectoryURL.standardizedFileURL == standardizedDirectory
+        {
+            return rightPane
+        }
+
+        return nil
+    }
 }
 
 private final class ArchiveDragPromiseCompletionHandler: @unchecked Sendable {
