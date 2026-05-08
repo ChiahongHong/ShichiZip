@@ -1,4 +1,5 @@
 import AppKit
+import os
 
 func szPresentTransferAncestryConflict(_ conflict: FileManagerTransferPathValidation.Conflict,
                                        move: Bool,
@@ -296,7 +297,7 @@ enum FileOperationDestinationResolver {
 
 enum FileOperationArchiveTransferSelection {
     static func selectionPaths(for sourceURLs: [URL], targetSubdir: String) -> [String] {
-        let normalizedTargetSubdir = normalizeArchivePath(targetSubdir)
+        let normalizedTargetSubdir = szNormalizedArchiveTransferPath(targetSubdir)
         var seenPaths = Set<String>()
         var selectionPaths: [String] = []
 
@@ -305,24 +306,132 @@ enum FileOperationArchiveTransferSelection {
             guard !leafName.isEmpty else { continue }
 
             let path = normalizedTargetSubdir.isEmpty ? leafName : normalizedTargetSubdir + "/" + leafName
-            let normalizedPath = normalizeArchivePath(path)
+            let normalizedPath = szNormalizedArchiveTransferPath(path)
             guard seenPaths.insert(normalizedPath).inserted else { continue }
             selectionPaths.append(normalizedPath)
         }
 
         return selectionPaths
     }
+}
 
-    private static func normalizeArchivePath(_ path: String) -> String {
-        var normalized = path
-        while normalized.hasSuffix("/") {
-            normalized.removeLast()
+struct FileOperationArchiveTransferConfirmation {
+    let title: String
+    let message: String
+
+    init(sourceURLs: [URL],
+         archiveName: String,
+         targetSubdir: String,
+         operation: NSDragOperation)
+    {
+        title = Self.title(for: sourceURLs,
+                           operation: operation)
+        message = Self.message(archiveName: archiveName,
+                               targetSubdir: targetSubdir,
+                               operation: operation)
+    }
+
+    private static func title(for sourceURLs: [URL],
+                              operation: NSDragOperation) -> String
+    {
+        if sourceURLs.count == 1 {
+            return operation == .move
+                ? SZL10n.string("app.fileManager.archiveTransfer.moveSingle", sourceURLs[0].lastPathComponent)
+                : SZL10n.string("app.fileManager.archiveTransfer.addSingle", sourceURLs[0].lastPathComponent)
         }
-        return normalized
+        return operation == .move
+            ? SZL10n.string("app.fileManager.archiveTransfer.moveMultiple", sourceURLs.count)
+            : SZL10n.string("app.fileManager.archiveTransfer.addMultiple", sourceURLs.count)
+    }
+
+    private static func message(archiveName: String,
+                                targetSubdir: String,
+                                operation: NSDragOperation) -> String
+    {
+        let normalizedSubdir = szNormalizedArchiveTransferPath(targetSubdir)
+        var lines = [SZL10n.string("app.fileManager.archiveTransfer.archive", archiveName)]
+        if !normalizedSubdir.isEmpty {
+            lines.append(SZL10n.string("app.fileManager.archiveTransfer.folder", normalizedSubdir))
+        }
+        lines.append("")
+        lines.append(SZL10n.string("app.fileManager.archiveTransfer.replaceWarning"))
+        if operation == .move {
+            lines.append("")
+            lines.append(SZL10n.string("app.fileManager.archiveTransfer.sourceRemovalWarning"))
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+
+private func szNormalizedArchiveTransferPath(_ path: String) -> String {
+    var normalized = path
+    while normalized.hasSuffix("/") {
+        normalized.removeLast()
+    }
+    return normalized
+}
+
+enum FileOperationDropTargetResolver {
+    static func fileSystemDestination(currentDirectory: URL,
+                                      dropOperation: NSTableView.DropOperation,
+                                      item: FileSystemItem?) -> URL?
+    {
+        if dropOperation != .on {
+            return currentDirectory.standardizedFileURL
+        }
+
+        guard let item else {
+            return currentDirectory.standardizedFileURL
+        }
+
+        guard item.isDirectory else {
+            return nil
+        }
+
+        return item.url.standardizedFileURL
+    }
+
+    static func archiveDestinationSubdir(currentSubdir: String,
+                                         dropOperation: NSTableView.DropOperation,
+                                         item: ArchiveItem?) -> String?
+    {
+        if dropOperation != .on {
+            return szNormalizedArchiveTransferPath(currentSubdir)
+        }
+
+        guard let item else {
+            return szNormalizedArchiveTransferPath(currentSubdir)
+        }
+
+        guard item.isDirectory else {
+            return nil
+        }
+
+        return szNormalizedArchiveTransferPath(item.path)
     }
 }
 
 enum FileOperationDropResolver {
+    static var promisedFilePasteboardTypes: [NSPasteboard.PasteboardType] {
+        NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) }
+    }
+
+    static func containsFilePromises(in pasteboard: NSPasteboard) -> Bool {
+        let promisedTypes = Set(promisedFilePasteboardTypes)
+        return pasteboard.types?.contains(where: promisedTypes.contains) ?? false
+    }
+
+    static func fileURLs(in pasteboard: NSPasteboard) -> [URL] {
+        guard let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL] else {
+            return []
+        }
+        return urls.map(\.standardizedFileURL)
+    }
+
+    static func promiseReceivers(in pasteboard: NSPasteboard) -> [NSFilePromiseReceiver] {
+        pasteboard.readObjects(forClasses: [NSFilePromiseReceiver.self]) as? [NSFilePromiseReceiver] ?? []
+    }
+
     static func fileSystemDropOperation(sourceMask: NSDragOperation,
                                         containsFilePromises: Bool,
                                         droppedFileURLs: [URL],
@@ -388,6 +497,50 @@ enum FileOperationDropResolver {
 
     private static func defaultVolumeURL(for url: URL) -> URL? {
         try? url.resourceValues(forKeys: [.volumeURLKey]).volume?.standardizedFileURL
+    }
+}
+
+struct FileOperationPromisedFileReception {
+    let fileURLs: [URL]
+    let firstError: Error?
+}
+
+enum FileOperationPromisedFileReceiver {
+    static func receive(_ promiseReceivers: [NSFilePromiseReceiver],
+                        at destinationDirectory: URL,
+                        completion: @escaping @MainActor (FileOperationPromisedFileReception) -> Void)
+    {
+        let operationQueue = OperationQueue()
+        operationQueue.qualityOfService = .userInitiated
+
+        let completionGroup = DispatchGroup()
+        let state = OSAllocatedUnfairLock(initialState: (fileURLs: [URL](), firstError: nil as Error?))
+
+        for promiseReceiver in promiseReceivers {
+            completionGroup.enter()
+            promiseReceiver.receivePromisedFiles(atDestination: destinationDirectory,
+                                                 options: [:],
+                                                 operationQueue: operationQueue)
+            { @Sendable fileURL, error in
+                state.withLock { reception in
+                    reception.fileURLs.append(fileURL.standardizedFileURL)
+                    if let error, reception.firstError == nil {
+                        reception.firstError = error
+                    }
+                }
+                completionGroup.leave()
+            }
+        }
+
+        completionGroup.notify(queue: .main) {
+            let reception = state.withLock {
+                FileOperationPromisedFileReception(fileURLs: $0.fileURLs,
+                                                   firstError: $0.firstError)
+            }
+            MainActor.assumeIsolated {
+                completion(reception)
+            }
+        }
     }
 }
 

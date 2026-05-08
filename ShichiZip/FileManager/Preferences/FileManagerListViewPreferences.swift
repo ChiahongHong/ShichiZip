@@ -183,6 +183,86 @@ extension FileManagerViewPreferences {
         return columns.first(where: { $0.sortKey == sortKey })?.id
     }
 
+    static func storedListViewColumnWidth(for column: FileManagerColumn,
+                                          folderTypeID: String,
+                                          defaults: UserDefaults = .standard) -> CGFloat
+    {
+        let storedWidth = listViewInfo(forFolderTypeID: folderTypeID,
+                                       defaults: defaults)?
+            .columns
+            .first(where: { $0.id == column.id })?
+            .width
+        guard let storedWidth, storedWidth.isFinite, storedWidth > 0 else {
+            return column.width
+        }
+        return max(storedWidth, column.minWidth)
+    }
+
+    static func storedListViewColumnOrderIDs(folderTypeID: String,
+                                             availableColumns: [FileManagerColumn],
+                                             defaults: UserDefaults = .standard) -> [FileManagerColumnID]
+    {
+        let availableIDs = Set(availableColumns.map(\.id))
+        var orderedIDs: [FileManagerColumnID] = []
+        var seenIDs = Set<FileManagerColumnID>()
+
+        let storedColumns = listViewInfo(forFolderTypeID: folderTypeID,
+                                         defaults: defaults)?.columns ?? []
+        for storedColumn in storedColumns where availableIDs.contains(storedColumn.id) {
+            guard seenIDs.insert(storedColumn.id).inserted else { continue }
+            orderedIDs.append(storedColumn.id)
+        }
+
+        for column in availableColumns {
+            guard seenIDs.insert(column.id).inserted else { continue }
+            orderedIDs.append(column.id)
+        }
+
+        return orderedIDs
+    }
+
+    static func restoredListViewColumnMove(for columnID: FileManagerColumnID,
+                                           currentColumnIDs: [FileManagerColumnID],
+                                           folderTypeID: String,
+                                           availableColumns: [FileManagerColumn],
+                                           defaults: UserDefaults = .standard) -> (from: Int, to: Int)?
+    {
+        let orderedIDs = storedListViewColumnOrderIDs(folderTypeID: folderTypeID,
+                                                      availableColumns: availableColumns,
+                                                      defaults: defaults)
+        guard let restoredOrderIndex = orderedIDs.firstIndex(of: columnID) else { return nil }
+
+        let precedingColumnIDs = Set(orderedIDs.prefix(upTo: restoredOrderIndex))
+        let targetIndex = currentColumnIDs.count(where: { precedingColumnIDs.contains($0) })
+        guard let currentIndex = currentColumnIDs.firstIndex(of: columnID),
+              targetIndex != currentIndex
+        else {
+            return nil
+        }
+
+        return (from: currentIndex,
+                to: min(targetIndex, currentColumnIDs.count - 1))
+    }
+
+    static func sortDescriptorsByResettingUnavailableColumn(_ sortDescriptors: [NSSortDescriptor],
+                                                            visibleColumnIDs: Set<FileManagerColumnID>,
+                                                            availableColumns: [FileManagerColumn]) -> [NSSortDescriptor]
+    {
+        guard let sortKey = sortDescriptors.first?.key else {
+            return sortDescriptors
+        }
+
+        let sortedColumnID = highlightedColumnID(for: sortKey,
+                                                 columns: availableColumns)
+        guard sortedColumnID.map({ !visibleColumnIDs.contains($0) }) ?? true else {
+            return sortDescriptors
+        }
+
+        return availableColumns
+            .first(where: { $0.id == .name })
+            .map { [$0.sortDescriptorPrototype] } ?? []
+    }
+
     static func listViewInfoDefaultsKey(forFolderTypeID folderTypeID: String) -> String {
         listViewInfoKeyPrefix + folderTypeID
     }

@@ -1,3 +1,4 @@
+import AppKit
 #if SHICHIZIP_ZS_VARIANT
     @testable import ShichiZip_ZS
 #else
@@ -236,6 +237,126 @@ final class FileManagerViewPreferencesTests: XCTestCase {
         XCTAssertEqual(fallbackDescriptor?.ascending, true)
     }
 
+    func testStoredListViewColumnWidthUsesSavedValidWidth() throws {
+        let defaults = try makeIsolatedDefaults()
+        let folderTypeID = FileManagerViewPreferences.fileSystemListViewFolderTypeID
+        let info = FileManagerViewPreferences.ListViewInfo(
+            sortKey: "name",
+            ascending: true,
+            columns: [FileManagerViewPreferences.ListViewColumnInfo(id: .size, isVisible: true, width: 1)],
+        )
+        let sizeColumn = try XCTUnwrap(FileManagerColumn.fileSystemColumns.first { $0.id == .size })
+
+        FileManagerViewPreferences.setListViewInfo(info,
+                                                   forFolderTypeID: folderTypeID,
+                                                   defaults: defaults)
+
+        XCTAssertEqual(FileManagerViewPreferences.storedListViewColumnWidth(for: sizeColumn,
+                                                                            folderTypeID: folderTypeID,
+                                                                            defaults: defaults),
+                       sizeColumn.minWidth)
+    }
+
+    func testStoredListViewColumnOrderIDsDeduplicateAndAppendAvailableColumns() throws {
+        let defaults = try makeIsolatedDefaults()
+        let folderTypeID = FileManagerViewPreferences.fileSystemListViewFolderTypeID
+        let info = FileManagerViewPreferences.ListViewInfo(
+            sortKey: "name",
+            ascending: true,
+            columns: [
+                FileManagerViewPreferences.ListViewColumnInfo(id: .crc, isVisible: true, width: 90),
+                FileManagerViewPreferences.ListViewColumnInfo(id: .size, isVisible: true, width: 120),
+                FileManagerViewPreferences.ListViewColumnInfo(id: .size, isVisible: true, width: 140),
+                FileManagerViewPreferences.ListViewColumnInfo(id: .name, isVisible: true, width: 250),
+            ],
+        )
+
+        FileManagerViewPreferences.setListViewInfo(info,
+                                                   forFolderTypeID: folderTypeID,
+                                                   defaults: defaults)
+
+        let orderIDs = FileManagerViewPreferences.storedListViewColumnOrderIDs(folderTypeID: folderTypeID,
+                                                                               availableColumns: FileManagerColumn.fileSystemColumns,
+                                                                               defaults: defaults)
+
+        XCTAssertEqual(Array(orderIDs.prefix(4)), [.size, .name, .modified, .created])
+    }
+
+    func testRestoredListViewColumnMoveUsesSavedOrder() throws {
+        let defaults = try makeIsolatedDefaults()
+        let folderTypeID = FileManagerViewPreferences.fileSystemListViewFolderTypeID
+        let info = FileManagerViewPreferences.ListViewInfo(
+            sortKey: "name",
+            ascending: true,
+            columns: [
+                FileManagerViewPreferences.ListViewColumnInfo(id: .size, isVisible: true, width: 120),
+                FileManagerViewPreferences.ListViewColumnInfo(id: .name, isVisible: true, width: 250),
+                FileManagerViewPreferences.ListViewColumnInfo(id: .modified, isVisible: true, width: 140),
+            ],
+        )
+
+        FileManagerViewPreferences.setListViewInfo(info,
+                                                   forFolderTypeID: folderTypeID,
+                                                   defaults: defaults)
+
+        let move = FileManagerViewPreferences.restoredListViewColumnMove(for: .size,
+                                                                         currentColumnIDs: [.name, .modified, .size],
+                                                                         folderTypeID: folderTypeID,
+                                                                         availableColumns: FileManagerColumn.fileSystemColumns,
+                                                                         defaults: defaults)
+
+        XCTAssertEqual(move?.from, 2)
+        XCTAssertEqual(move?.to, 0)
+    }
+
+    func testRestoredListViewColumnMoveReturnsNilWhenColumnIsAlreadyPlaced() throws {
+        let defaults = try makeIsolatedDefaults()
+        let folderTypeID = FileManagerViewPreferences.fileSystemListViewFolderTypeID
+        let info = FileManagerViewPreferences.ListViewInfo(
+            sortKey: "name",
+            ascending: true,
+            columns: [
+                FileManagerViewPreferences.ListViewColumnInfo(id: .size, isVisible: true, width: 120),
+                FileManagerViewPreferences.ListViewColumnInfo(id: .name, isVisible: true, width: 250),
+            ],
+        )
+
+        FileManagerViewPreferences.setListViewInfo(info,
+                                                   forFolderTypeID: folderTypeID,
+                                                   defaults: defaults)
+
+        let move = FileManagerViewPreferences.restoredListViewColumnMove(for: .size,
+                                                                         currentColumnIDs: [.size, .name, .modified],
+                                                                         folderTypeID: folderTypeID,
+                                                                         availableColumns: FileManagerColumn.fileSystemColumns,
+                                                                         defaults: defaults)
+
+        XCTAssertNil(move)
+    }
+
+    func testSortDescriptorsByResettingUnavailableColumnKeepsVisibleSortColumn() {
+        let columns = FileManagerColumn.fileSystemColumns
+        let sizeDescriptor = FileManagerColumn.definition(for: .size).sortDescriptorPrototype
+
+        let descriptors = FileManagerViewPreferences.sortDescriptorsByResettingUnavailableColumn([sizeDescriptor],
+                                                                                                 visibleColumnIDs: [.name, .size],
+                                                                                                 availableColumns: columns)
+
+        XCTAssertEqual(descriptors.first?.key, "size")
+    }
+
+    func testSortDescriptorsByResettingUnavailableColumnFallsBackToName() {
+        let columns = FileManagerColumn.fileSystemColumns
+        let sizeDescriptor = FileManagerColumn.definition(for: .size).sortDescriptorPrototype
+
+        let descriptors = FileManagerViewPreferences.sortDescriptorsByResettingUnavailableColumn([sizeDescriptor],
+                                                                                                 visibleColumnIDs: [.name, .modified],
+                                                                                                 availableColumns: columns)
+
+        XCTAssertEqual(descriptors.first?.key, "name")
+        XCTAssertEqual(descriptors.first?.ascending, true)
+    }
+
     func testMakeDateFormatterReturnsIndependentInstances() {
         let first = FileManagerViewPreferences.makeDateFormatter(dateStyle: .medium,
                                                                  timeStyle: .medium)
@@ -343,6 +464,18 @@ final class FileManagerColumnTests: XCTestCase {
         XCTAssertEqual(columns.first(where: { $0.id == hostOSColumnID })?.titleFallback, "Host OS")
         XCTAssertEqual(columns.first(where: { $0.id == hostOSColumnID })?.alignment, .left)
         XCTAssertEqual(columns.first(where: { $0.id == checksumColumnID })?.alignment, .right)
+    }
+
+    func testVisibleColumnsFollowTableColumnOrderAndIgnoreUnavailableColumns() {
+        let methodColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(FileManagerColumnID.method.rawValue))
+        let missingColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("missing"))
+        let nameColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(FileManagerColumnID.name.rawValue))
+        let columns = FileManagerColumn.archiveColumns(availablePropertyKeys: ["method"])
+
+        let visibleColumns = FileManagerColumn.visibleColumns(inTableOrder: [methodColumn, missingColumn, nameColumn],
+                                                              availableColumns: columns)
+
+        XCTAssertEqual(visibleColumns.map(\.id), [.method, .name])
     }
 
     func testColumnAlignmentFollowsUpstreamPropertyTypes() {
