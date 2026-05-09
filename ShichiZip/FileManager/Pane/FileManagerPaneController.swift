@@ -659,7 +659,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         return (target.archive, target.subdir)
     }
 
-    private func revalidatedArchiveMutationTarget(for target: (archive: SZArchive, subdir: String)) -> (archive: SZArchive, subdir: String)? {
+    func revalidatedArchiveMutationTarget(for target: (archive: SZArchive, subdir: String)) -> (archive: SZArchive, subdir: String)? {
         guard let archiveURL = archiveSession.archiveURL(for: target.archive) else {
             return nil
         }
@@ -915,7 +915,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     func extractSelectionHere() {
-        extractHere(nil)
+        FileManagerPaneMutationCommandSupport.extractHere(in: self)
     }
 
     func openRootFolder() {
@@ -1332,76 +1332,13 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     // MARK: - Creation Operations
 
     func createFolder(named name: String) {
-        if isInsideArchive {
-            guard let target = currentArchiveMutationTarget() else {
-                showReadOnlyArchiveMutationAlert(action: SZL10n.string("app.fileManager.action.creatingFolders"))
-                return
-            }
-
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                guard let currentTarget = revalidatedArchiveMutationTarget(for: target) else {
-                    showReadOnlyArchiveMutationAlert(action: SZL10n.string("app.fileManager.action.creatingFolders"))
-                    return
-                }
-
-                let createdPath = currentTarget.subdir.isEmpty ? name : currentTarget.subdir + "/" + name
-
-                do {
-                    try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("create.folder"),
-                                                         parentWindow: view.window,
-                                                         deferredDisplay: true)
-                    { session in
-                        try currentTarget.archive.createFolderNamed(name,
-                                                                    inArchiveSubdir: currentTarget.subdir,
-                                                                    session: session)
-                    }
-                    refreshArchiveAfterMutation(selectingPath: createdPath)
-                    publishArchiveMutationIfNeeded(selectingPaths: [createdPath])
-                } catch {
-                    showErrorAlert(error)
-                }
-            }
-            return
-        }
-
-        let url = currentDirectory.appendingPathComponent(name)
-        do {
-            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
-            refresh()
-        } catch {
-            showErrorAlert(error)
-        }
+        FileManagerPaneMutationCommandSupport.createFolder(named: name,
+                                                           in: self)
     }
 
     func createFile(named name: String) {
-        guard !isInsideArchive else {
-            showUnsupportedArchiveOperationAlert(action: SZL10n.string("app.fileManager.action.creatingFiles"))
-            return
-        }
-
-        let url = currentDirectory.appendingPathComponent(name)
-        if FileManager.default.fileExists(atPath: url.path) {
-            showErrorAlert(NSError(domain: NSCocoaErrorDomain,
-                                   code: NSFileWriteFileExistsError,
-                                   userInfo: [
-                                       NSFilePathErrorKey: url.path,
-                                       NSLocalizedDescriptionKey: SZL10n.string("app.fileManager.error.fileAlreadyExists", name),
-                                   ]))
-            return
-        }
-
-        if FileManager.default.createFile(atPath: url.path, contents: Data()) {
-            refresh()
-            return
-        }
-
-        showErrorAlert(NSError(domain: NSCocoaErrorDomain,
-                               code: NSFileWriteUnknownError,
-                               userInfo: [
-                                   NSFilePathErrorKey: url.path,
-                                   NSLocalizedDescriptionKey: SZL10n.string("app.fileManager.error.unableToCreate", name),
-                               ]))
+        FileManagerPaneMutationCommandSupport.createFile(named: name,
+                                                         in: self)
     }
 
     // MARK: - Presentation State
@@ -1875,7 +1812,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         tableModel.selectedSingleRealItem(in: tableView.selectedRowIndexes)
     }
 
-    private func selectedFileSystemItems() -> [FileSystemItem] {
+    func selectedFileSystemItems() -> [FileSystemItem] {
         tableModel.selectedFileSystemItems(in: tableView.selectedRowIndexes)
     }
 
@@ -1885,7 +1822,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         return items[0]
     }
 
-    private func selectedArchiveItems() -> [ArchiveItem] {
+    func selectedArchiveItems() -> [ArchiveItem] {
         tableModel.selectedArchiveItems(in: tableView.selectedRowIndexes)
     }
 
@@ -1903,7 +1840,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         archiveSession.currentDisplayPathPrefix ?? currentDirectory.path
     }
 
-    private func archiveHostDirectory() -> URL {
+    func archiveHostDirectory() -> URL {
         archiveSession.currentHostDirectory ?? currentDirectory
     }
 
@@ -2084,8 +2021,8 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         archiveCoordinator.handlePublishedArchiveChange(change)
     }
 
-    private func publishArchiveMutationIfNeeded(targetSubdir: String? = nil,
-                                                selectingPaths paths: [String] = [])
+    func publishArchiveMutationIfNeeded(targetSubdir: String? = nil,
+                                        selectingPaths paths: [String] = [])
     {
         archiveCoordinator.publishMutationIfNeeded(targetSubdir: targetSubdir,
                                                    selectingPaths: paths)
@@ -2238,12 +2175,6 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
 
     private func showErrorAlert(_ error: Error) {
         szPresentError(error, for: view.window)
-    }
-
-    private func showUnsupportedArchiveOperationAlert(action: String) {
-        szPresentMessage(title: SZL10n.string("app.fileManager.alert.actionNotAvailableTitle", action),
-                         message: SZL10n.string("app.fileManager.alert.archiveModificationNotSupported"),
-                         for: view.window)
     }
 
     func showReadOnlyArchiveMutationAlert(action: String) {
@@ -2925,196 +2856,19 @@ extension FileManagerPaneController {
     }
 
     @objc private func extractHere(_: Any?) {
-        if isInsideArchive {
-            let destinationURL = archiveHostDirectory()
-            Task { @MainActor [weak self] in
-                guard let self, let parentWindow = view.window else { return }
-                do {
-                    let prepared = try prepareExtraction(to: destinationURL,
-                                                         overwriteMode: .ask,
-                                                         inheritDownloadedFileQuarantine: SZSettings.bool(.inheritDownloadedFileQuarantine))
-                    try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("progress.extracting"),
-                                                         parentWindow: parentWindow)
-                    { session in
-                        try prepared.perform(session: session)
-                    }
-                } catch {
-                    showErrorAlert(error)
-                }
-            }
-            return
-        }
-
-        guard let url = selectedArchiveCandidateURL() else { return }
-
-        let destURL = currentDirectory
-        Task { @MainActor [weak self] in
-            guard let self, let parentWindow = view.window else { return }
-            do {
-                try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("progress.extracting"),
-                                                     parentWindow: parentWindow)
-                { session in
-                    let archive = SZArchive()
-                    try archive.open(atPath: url.path, session: session)
-                    let settings = SZExtractionSettings()
-                    settings.overwriteMode = .ask
-                    if SZSettings.bool(.inheritDownloadedFileQuarantine) {
-                        settings.sourceArchivePathForQuarantine = url.path
-                    }
-                    try archive.extract(toPath: destURL.path, settings: settings, session: session)
-                    archive.close()
-                }
-                refresh()
-            } catch {
-                showErrorAlert(error)
-            }
-        }
+        extractSelectionHere()
     }
 
     @objc private func renameSelected(_: Any?) {
-        if isInsideArchive {
-            guard let target = currentArchiveMutationTarget() else {
-                showReadOnlyArchiveMutationAlert(action: SZL10n.string("app.fileManager.action.renamingArchiveItems"))
-                return
-            }
-
-            let selectedItems = selectedArchiveItems()
-            guard selectedItems.count == 1 else { return }
-            let item = selectedItems[0]
-
-            guard let window = view.window else { return }
-            szBeginTextInput(on: window,
-                             title: SZL10n.string("menu.rename"),
-                             initialValue: item.name,
-                             confirmTitle: SZL10n.string("menu.rename"))
-            { [weak self] value in
-                guard let self,
-                      let newName = value else { return }
-                guard !newName.isEmpty, newName != item.name else { return }
-
-                let renamedPath = item.parentPath.isEmpty ? newName : item.parentPath + "/" + newName
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    guard let currentTarget = revalidatedArchiveMutationTarget(for: target) else {
-                        showReadOnlyArchiveMutationAlert(action: SZL10n.string("app.fileManager.action.renamingArchiveItems"))
-                        return
-                    }
-
-                    do {
-                        try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("fileop.renaming"),
-                                                             parentWindow: view.window,
-                                                             deferredDisplay: true)
-                        { session in
-                            try currentTarget.archive.renameItem(atPath: item.path,
-                                                                 inArchiveSubdir: currentTarget.subdir,
-                                                                 newName: newName,
-                                                                 session: session)
-                        }
-                        refreshArchiveAfterMutation(selectingPath: renamedPath)
-                        publishArchiveMutationIfNeeded(selectingPaths: [renamedPath])
-                    } catch {
-                        showErrorAlert(error)
-                    }
-                }
-            }
-            return
-        }
-
-        let selectedItems = selectedFileSystemItems()
-        guard selectedItems.count == 1 else { return }
-        let item = selectedItems[0]
-
-        guard let window = view.window else { return }
-        szBeginTextInput(on: window,
-                         title: SZL10n.string("menu.rename"),
-                         initialValue: item.name,
-                         confirmTitle: SZL10n.string("menu.rename"))
-        { [weak self] value in
-            guard let newName = value else { return }
-            guard !newName.isEmpty, newName != item.name else { return }
-            let newURL = item.url.deletingLastPathComponent().appendingPathComponent(newName)
-            do {
-                try FileManager.default.moveItem(at: item.url, to: newURL)
-                self?.refresh()
-            } catch {
-                self?.showErrorAlert(error)
-            }
-        }
+        FileManagerPaneMutationCommandSupport.renameSelection(in: self)
     }
 
     @objc private func deleteSelected(_: Any?) {
-        if isInsideArchive {
-            guard let target = currentArchiveMutationTarget() else {
-                showReadOnlyArchiveMutationAlert(action: SZL10n.string("app.fileManager.action.deletingArchiveItems"))
-                return
-            }
-
-            let selectedItems = selectedArchiveItems()
-            guard !selectedItems.isEmpty else { return }
-
-            let itemPaths = selectedItems.map(\.path)
-            guard let window = view.window else { return }
-            szBeginConfirmation(on: window,
-                                title: SZL10n.string("app.fileManager.deleteFromArchiveTitle", itemPaths.count),
-                                message: SZL10n.string("app.fileManager.deleteFromArchiveMessage"),
-                                confirmTitle: SZL10n.string("toolbar.delete"))
-            { [weak self] confirmed in
-                guard let self, confirmed else { return }
-
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    guard let currentTarget = revalidatedArchiveMutationTarget(for: target) else {
-                        showReadOnlyArchiveMutationAlert(action: SZL10n.string("app.fileManager.action.deletingArchiveItems"))
-                        return
-                    }
-
-                    do {
-                        try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("progress.deleting"),
-                                                             parentWindow: view.window,
-                                                             deferredDisplay: true)
-                        { session in
-                            try currentTarget.archive.deleteItems(atPaths: itemPaths,
-                                                                  inArchiveSubdir: currentTarget.subdir,
-                                                                  session: session)
-                        }
-                        refreshArchiveAfterMutation()
-                        publishArchiveMutationIfNeeded(targetSubdir: currentTarget.subdir)
-                    } catch {
-                        showErrorAlert(error)
-                    }
-                }
-            }
-            return
-        }
-
-        let paths = selectedFilePaths()
-        guard !paths.isEmpty else { return }
-
-        guard let window = view.window else { return }
-        szBeginConfirmation(on: window,
-                            title: SZL10n.string("app.fileManager.deleteItemsTitle", paths.count),
-                            message: SZL10n.string("app.fileManager.deleteItemsMessage"),
-                            confirmTitle: SZL10n.string("toolbar.delete"))
-        { [weak self] confirmed in
-            guard confirmed else { return }
-            let failures = FileManagerTrashOperation.trashItems(at: paths)
-            self?.refresh()
-            if let error = FileManagerTrashOperation.error(for: failures, attemptedCount: paths.count) {
-                self?.showErrorAlert(error)
-            }
-        }
+        FileManagerPaneMutationCommandSupport.deleteSelection(in: self)
     }
 
     @objc private func createFolderFromMenu(_: Any?) {
-        guard let window = view.window else { return }
-        szBeginTextInput(on: window,
-                         title: SZL10n.string("create.folder"),
-                         placeholder: SZL10n.string("create.newFolder"),
-                         confirmTitle: SZL10n.string("create.folder"))
-        { [weak self] value in
-            guard let name = value, !name.isEmpty else { return }
-            self?.createFolder(named: name)
-        }
+        FileManagerPaneMutationCommandSupport.promptForFolderCreation(in: self)
     }
 
     @objc private func showItemProperties(_: Any?) {
