@@ -175,6 +175,109 @@ enum FileManagerQuickLookPreparation {
     }
 }
 
+@MainActor
+enum FileManagerQuickLookPanePreparation {
+    typealias SelectedEntry = (row: Int, item: FileManagerPaneItem)
+    typealias SourceProvider = @MainActor (Int, FileManagerPaneItem) -> FileManagerQuickLookItemSource
+    typealias ArchiveContextProvider = @MainActor () -> FileManagerArchiveItemWorkflowContext?
+    typealias ArchiveStager = ([ArchiveItem], FileManagerArchiveItemWorkflowContext, SZOperationSession) throws -> FileManagerArchiveQuickLookPreview
+    typealias TemporaryDirectoryCleaner = (URL) -> Void
+
+    static func fileSystemPreview(isVirtualLocation: Bool,
+                                  selectedEntries: [SelectedEntry],
+                                  sourceProvider: SourceProvider) throws -> FileManagerQuickLookPreparedPreview?
+    {
+        guard !isVirtualLocation else { return nil }
+
+        guard !selectedEntries.isEmpty else {
+            throw FileManagerQuickLookPreparation.error(SZL10n.string("app.fileManager.quickLook.selectItems"))
+        }
+
+        let selection = selectedEntries.compactMap { entry -> FileManagerQuickLookFileSystemSelection? in
+            guard case let .filesystem(item) = entry.item else { return nil }
+            return FileManagerQuickLookFileSystemSelection(item: item,
+                                                           source: sourceProvider(entry.row,
+                                                                                  entry.item))
+        }
+        return try FileManagerQuickLookPreparation.fileSystemPreview(for: selection)
+    }
+
+    static func preview(isVirtualLocation: Bool,
+                        selectedEntries: [SelectedEntry],
+                        archiveLevel: FileManagerArchiveLevel?,
+                        archiveContextProvider: ArchiveContextProvider,
+                        parentWindow: NSWindow?,
+                        maxArchiveItemSize: UInt64,
+                        maxArchiveCombinedSize: UInt64,
+                        maxSolidArchiveSize: UInt64,
+                        sourceProvider: SourceProvider,
+                        stageArchiveItems: @escaping ArchiveStager) async throws -> FileManagerQuickLookPreparedPreview
+    {
+        if let filesystemPreview = try fileSystemPreview(isVirtualLocation: isVirtualLocation,
+                                                         selectedEntries: selectedEntries,
+                                                         sourceProvider: sourceProvider)
+        {
+            return filesystemPreview
+        }
+
+        guard !selectedEntries.isEmpty else {
+            throw FileManagerQuickLookPreparation.error(SZL10n.string("app.fileManager.quickLook.selectItems"))
+        }
+
+        guard let archiveLevel else {
+            throw FileManagerQuickLookPreparation.error(SZL10n.string("app.fileManager.quickLook.cannotPreviewArchive"))
+        }
+
+        let archiveSelection = selectedEntries.compactMap { entry -> (row: Int, item: ArchiveItem)? in
+            guard case let .archive(item) = entry.item else { return nil }
+            return (entry.row, item)
+        }
+        let archiveItems = archiveSelection.map(\.item)
+        try FileManagerQuickLookPreparation.validateArchiveItems(archiveItems,
+                                                                 archiveHasActiveOperations: archiveLevel.operationGate.hasActiveLeases,
+                                                                 isSolidArchive: archiveLevel.archive.isSolidArchive,
+                                                                 archiveSizeProvider: {
+                                                                     FileManagerQuickLookPreparation.archivePhysicalSize(reportedSize: archiveLevel.archive.archivePhysicalSize,
+                                                                                                                         archivePath: archiveLevel.archivePath)
+                                                                 },
+                                                                 maxArchiveItemSize: maxArchiveItemSize,
+                                                                 maxArchiveCombinedSize: maxArchiveCombinedSize,
+                                                                 maxSolidArchiveSize: maxSolidArchiveSize)
+
+        guard let context = archiveContextProvider() else {
+            throw FileManagerQuickLookPreparation.error(SZL10n.string("app.fileManager.quickLook.cannotPreviewArchive"))
+        }
+
+        let stagedPreview = try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("app.progress.working"),
+                                                                 initialFileName: archiveItems.count == 1 ? archiveItems[0].path : nil,
+                                                                 parentWindow: parentWindow,
+                                                                 deferredDisplay: true)
+        { session in
+            try stageArchiveItems(archiveItems,
+                                  context,
+                                  session)
+        }
+
+        let previewSelection = archiveSelection.map { selection in
+            FileManagerQuickLookArchiveSelection(item: selection.item,
+                                                 source: sourceProvider(selection.row,
+                                                                        .archive(selection.item)))
+        }
+        let previewItems = FileManagerQuickLookPreparation.archivePreviewItems(for: previewSelection,
+                                                                               stagedFileURLs: stagedPreview.fileURLs)
+        return FileManagerQuickLookPreparedPreview(items: previewItems,
+                                                   temporaryDirectories: [stagedPreview.temporaryDirectory])
+    }
+
+    static func cleanupTemporaryDirectories(_ temporaryDirectories: [URL],
+                                            cleaner: TemporaryDirectoryCleaner)
+    {
+        for url in temporaryDirectories {
+            cleaner(url)
+        }
+    }
+}
+
 private enum FileManagerQuickLookLimits {
     static let maxArchiveItemSize: UInt64 = 128 * 1024 * 1024
     static let maxArchiveCombinedSize: UInt64 = 256 * 1024 * 1024

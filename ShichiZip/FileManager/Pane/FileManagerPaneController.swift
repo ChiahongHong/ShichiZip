@@ -1084,20 +1084,9 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     // MARK: - Quick Look Preparation
 
     func prepareQuickLookPreviewForFileSystem() throws -> FileManagerQuickLookPreparedPreview? {
-        guard !isInsideArchive else { return nil }
-
-        let selectedEntries = selectedQuickLookRowsAndItems()
-        guard !selectedEntries.isEmpty else {
-            throw FileManagerQuickLookPreparation.error(SZL10n.string("app.fileManager.quickLook.selectItems"))
-        }
-
-        let selection = selectedEntries.compactMap { entry -> FileManagerQuickLookFileSystemSelection? in
-            guard case let .filesystem(item) = entry.item else { return nil }
-            return FileManagerQuickLookFileSystemSelection(item: item,
-                                                           source: quickLookSourceInfo(forRow: entry.row,
-                                                                                       paneItem: entry.item))
-        }
-        return try FileManagerQuickLookPreparation.fileSystemPreview(for: selection)
+        try FileManagerQuickLookPanePreparation.fileSystemPreview(isVirtualLocation: isVirtualLocation,
+                                                                  selectedEntries: selectedQuickLookRowsAndItems(),
+                                                                  sourceProvider: quickLookSourceInfo(forRow:paneItem:))
     }
 
     @MainActor
@@ -1105,62 +1094,24 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                                  maxArchiveCombinedSize: UInt64,
                                  maxSolidArchiveSize: UInt64) async throws -> FileManagerQuickLookPreparedPreview
     {
-        if let filesystemPreview = try prepareQuickLookPreviewForFileSystem() {
-            return filesystemPreview
-        }
-
-        let selectedEntries = selectedQuickLookRowsAndItems()
-        guard !selectedEntries.isEmpty else {
-            throw FileManagerQuickLookPreparation.error(SZL10n.string("app.fileManager.quickLook.selectItems"))
-        }
-
-        guard let level = archiveSession.currentLevel else {
-            throw FileManagerQuickLookPreparation.error(SZL10n.string("app.fileManager.quickLook.cannotPreviewArchive"))
-        }
-
-        let archiveSelection = selectedEntries.compactMap { entry -> (row: Int, item: ArchiveItem)? in
-            guard case let .archive(item) = entry.item else { return nil }
-            return (entry.row, item)
-        }
-        let archiveItems = archiveSelection.map(\.item)
-        try FileManagerQuickLookPreparation.validateArchiveItems(archiveItems,
-                                                                 archiveHasActiveOperations: level.operationGate.hasActiveLeases,
-                                                                 isSolidArchive: level.archive.isSolidArchive,
-                                                                 archiveSizeProvider: {
-                                                                     FileManagerQuickLookPreparation.archivePhysicalSize(reportedSize: level.archive.archivePhysicalSize,
-                                                                                                                         archivePath: level.archivePath)
-                                                                 },
-                                                                 maxArchiveItemSize: maxArchiveItemSize,
-                                                                 maxArchiveCombinedSize: maxArchiveCombinedSize,
-                                                                 maxSolidArchiveSize: maxSolidArchiveSize)
-
-        guard let context = currentArchiveItemWorkflowContext() else {
-            throw FileManagerQuickLookPreparation.error(SZL10n.string("app.fileManager.quickLook.cannotPreviewArchive"))
-        }
-
-        let stagedPreview = try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("app.progress.working"),
-                                                                 initialFileName: archiveItems.count == 1 ? archiveItems[0].path : nil,
-                                                                 parentWindow: view.window,
-                                                                 deferredDisplay: true)
-        { [archiveSession] session in
-            try archiveSession.itemWorkflowService.stageQuickLookItems(archiveItems,
+        try await FileManagerQuickLookPanePreparation.preview(isVirtualLocation: isVirtualLocation,
+                                                              selectedEntries: selectedQuickLookRowsAndItems(),
+                                                              archiveLevel: archiveSession.currentLevel,
+                                                              archiveContextProvider: { [self] in currentArchiveItemWorkflowContext() },
+                                                              parentWindow: view.window,
+                                                              maxArchiveItemSize: maxArchiveItemSize,
+                                                              maxArchiveCombinedSize: maxArchiveCombinedSize,
+                                                              maxSolidArchiveSize: maxSolidArchiveSize,
+                                                              sourceProvider: quickLookSourceInfo(forRow:paneItem:))
+        { [archiveSession] items, context, session in
+            try archiveSession.itemWorkflowService.stageQuickLookItems(items,
                                                                        context: context,
                                                                        session: session)
         }
-
-        let previewSelection = archiveSelection.map { selection in
-            FileManagerQuickLookArchiveSelection(item: selection.item,
-                                                 source: quickLookSourceInfo(forRow: selection.row,
-                                                                             paneItem: .archive(selection.item)))
-        }
-        let previewItems = FileManagerQuickLookPreparation.archivePreviewItems(for: previewSelection,
-                                                                               stagedFileURLs: stagedPreview.fileURLs)
-        return FileManagerQuickLookPreparedPreview(items: previewItems,
-                                                   temporaryDirectories: [stagedPreview.temporaryDirectory])
     }
 
     func cleanupQuickLookTemporaryDirectories(_ temporaryDirectories: [URL]) {
-        for url in temporaryDirectories {
+        FileManagerQuickLookPanePreparation.cleanupTemporaryDirectories(temporaryDirectories) { [archiveSession] url in
             archiveSession.cleanupTemporaryDirectory(url)
         }
     }
