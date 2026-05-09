@@ -6,9 +6,18 @@ final class FileManagerPaneArchiveCoordinator {
     private let observerIdentifier: ObjectIdentifier
     private let parentWindow: () -> NSWindow?
     private let isViewLoaded: () -> Bool
-    private let presentCurrentArchiveSubdir: () -> Void
+    private let currentDirectory: () -> URL
+    private let setCurrentDirectory: (URL) -> Void
+    private let recordDirectoryVisit: (URL) -> Void
+    private let cancelPendingDirectorySnapshot: () -> Void
+    private let tearDownDirectoryWatcher: () -> Void
     private let updateTableColumns: () -> Void
+    private let sortCurrentItems: () -> Void
+    private let updatePathField: () -> Void
+    private let updateStatusBar: () -> Void
+    private let reloadTableData: () -> Void
     private let selectArchivePaths: ([String]) -> Void
+    private let hasDirtyNestedArchiveInstance: (FileManagerNestedArchiveIdentity) -> Bool
     private let showError: (Error) -> Void
 
     private var archiveRefreshGeneration = 0
@@ -18,19 +27,162 @@ final class FileManagerPaneArchiveCoordinator {
          observerIdentifier: ObjectIdentifier,
          parentWindow: @escaping () -> NSWindow?,
          isViewLoaded: @escaping () -> Bool,
-         presentCurrentArchiveSubdir: @escaping () -> Void,
          updateTableColumns: @escaping () -> Void,
+         currentDirectory: @escaping () -> URL = { FileManager.default.homeDirectoryForCurrentUser },
+         setCurrentDirectory: @escaping (URL) -> Void = { _ in },
+         recordDirectoryVisit: @escaping (URL) -> Void = { _ in },
+         cancelPendingDirectorySnapshot: @escaping () -> Void = {},
+         tearDownDirectoryWatcher: @escaping () -> Void = {},
+         sortCurrentItems: @escaping () -> Void = {},
+         updatePathField: @escaping () -> Void = {},
+         updateStatusBar: @escaping () -> Void = {},
+         reloadTableData: @escaping () -> Void = {},
          selectArchivePaths: @escaping ([String]) -> Void,
+         hasDirtyNestedArchiveInstance: @escaping (FileManagerNestedArchiveIdentity) -> Bool = { _ in false },
          showError: @escaping (Error) -> Void)
     {
         self.archiveSession = archiveSession
         self.observerIdentifier = observerIdentifier
         self.parentWindow = parentWindow
         self.isViewLoaded = isViewLoaded
-        self.presentCurrentArchiveSubdir = presentCurrentArchiveSubdir
+        self.currentDirectory = currentDirectory
+        self.setCurrentDirectory = setCurrentDirectory
+        self.recordDirectoryVisit = recordDirectoryVisit
+        self.cancelPendingDirectorySnapshot = cancelPendingDirectorySnapshot
+        self.tearDownDirectoryWatcher = tearDownDirectoryWatcher
         self.updateTableColumns = updateTableColumns
+        self.sortCurrentItems = sortCurrentItems
+        self.updatePathField = updatePathField
+        self.updateStatusBar = updateStatusBar
+        self.reloadTableData = reloadTableData
         self.selectArchivePaths = selectArchivePaths
+        self.hasDirtyNestedArchiveInstance = hasDirtyNestedArchiveInstance
         self.showError = showError
+    }
+
+    // MARK: - Opening And Presentation
+
+    @discardableResult
+    func openArchiveInline(_ url: URL,
+                           hostDirectory: URL? = nil,
+                           temporaryDirectory: URL? = nil,
+                           displayPathPrefix: String? = nil,
+                           nestedWriteBackInfo: FileManagerNestedArchiveWriteBackInfo? = nil,
+                           openMode: FileManagerArchiveOpenMode = .defaultBehavior,
+                           showError: Bool = true,
+                           preserveTemporaryDirectoryOnUnsupported: Bool = false,
+                           replaceCurrentState: Bool = false) -> FileManagerArchiveOpenResult
+    {
+        let paneHostDirectory = hostDirectory ?? archiveHostDirectory()
+        let resolvedDisplayPathPrefix = displayPathPrefix ?? url.path
+        let progressParentWindow = parentWindow().flatMap { window in
+            window.isVisible ? window : nil
+        }
+
+        let preparedResult = FileManagerArchiveOpenService.openSynchronously(url: url,
+                                                                             hostDirectory: paneHostDirectory,
+                                                                             temporaryDirectory: temporaryDirectory,
+                                                                             displayPathPrefix: resolvedDisplayPathPrefix,
+                                                                             parentWindow: progressParentWindow,
+                                                                             nestedWriteBackInfo: nestedWriteBackInfo,
+                                                                             openMode: openMode)
+
+        return finishArchiveOpen(preparedResult,
+                                 temporaryDirectory: temporaryDirectory,
+                                 preserveTemporaryDirectoryOnUnsupported: preserveTemporaryDirectoryOnUnsupported,
+                                 replaceCurrentState: replaceCurrentState,
+                                 showError: showError)
+    }
+
+    func finishArchiveOpen(_ preparedResult: FileManagerPreparedArchiveOpenResult,
+                           temporaryDirectory: URL?,
+                           preserveTemporaryDirectoryOnUnsupported: Bool,
+                           replaceCurrentState: Bool,
+                           showError: Bool) -> FileManagerArchiveOpenResult
+    {
+        let result: FileManagerArchiveOpenResult
+        switch preparedResult {
+        case let .opened(prepared):
+            if let nestedIdentity = prepared.nestedWriteBackInfo?.identity,
+               hasDirtyNestedArchiveInstance(nestedIdentity)
+            {
+                prepared.archive.close()
+                archiveSession.cleanupTemporaryDirectory(prepared.temporaryDirectory)
+                result = .failed(operationError(SZL10n.string("app.fileManager.error.nestedArchiveDirty")))
+                break
+            }
+
+            if commitPreparedArchive(prepared,
+                                     replaceCurrentState: replaceCurrentState)
+            {
+                return .opened
+            }
+            return .cancelled
+
+        case let .unsupportedArchive(error):
+            if !preserveTemporaryDirectoryOnUnsupported {
+                archiveSession.cleanupTemporaryDirectory(temporaryDirectory)
+            }
+            result = .unsupportedArchive(error)
+
+        case .cancelled:
+            archiveSession.cleanupTemporaryDirectory(temporaryDirectory)
+            result = .cancelled
+
+        case let .failed(error):
+            archiveSession.cleanupTemporaryDirectory(temporaryDirectory)
+            result = .failed(error)
+        }
+
+        if showError {
+            switch result {
+            case let .unsupportedArchive(error), let .failed(error):
+                self.showError(error)
+            case .opened, .cancelled:
+                break
+            }
+        }
+
+        return result
+    }
+
+    func navigateSubdir(_ subdir: String) {
+        guard archiveSession.navigateSubdir(subdir) else { return }
+        presentCurrentArchiveSubdir()
+    }
+
+    func cleanupTemporaryDirectory(_ temporaryDirectory: URL?) {
+        archiveSession.cleanupTemporaryDirectory(temporaryDirectory)
+    }
+
+    private func commitPreparedArchive(_ prepared: FileManagerPreparedArchiveOpen,
+                                       replaceCurrentState: Bool) -> Bool
+    {
+        if replaceCurrentState, !closeAll(showError: true) {
+            prepared.archive.close()
+            archiveSession.cleanupTemporaryDirectory(prepared.temporaryDirectory)
+            return false
+        }
+
+        setCurrentDirectory(prepared.hostDirectory)
+        recordDirectoryVisit(prepared.hostDirectory)
+        cancelPendingDirectorySnapshot()
+        tearDownDirectoryWatcher()
+        archiveSession.appendPreparedArchive(prepared)
+        presentCurrentArchiveSubdir()
+        return true
+    }
+
+    private func presentCurrentArchiveSubdir() {
+        updateTableColumns()
+        sortCurrentItems()
+        updatePathField()
+        updateStatusBar()
+        reloadTableData()
+    }
+
+    private func archiveHostDirectory() -> URL {
+        archiveSession.currentHostDirectory ?? currentDirectory()
     }
 
     // MARK: - Reloads And Change Propagation

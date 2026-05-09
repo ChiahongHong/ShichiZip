@@ -76,14 +76,42 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
             isViewLoaded: { [weak self] in
                 self?.isViewLoaded == true
             },
-            presentCurrentArchiveSubdir: { [weak self] in
-                self?.presentCurrentArchiveSubdir()
-            },
             updateTableColumns: { [weak self] in
                 self?.updateTableColumnsForCurrentLocation()
             },
+            currentDirectory: { [weak self] in
+                self?.currentDirectory ?? FileManager.default.homeDirectoryForCurrentUser
+            },
+            setCurrentDirectory: { [weak self] url in
+                self?.currentDirectory = url
+            },
+            recordDirectoryVisit: { [weak self] url in
+                self?.recordDirectoryVisit(url)
+            },
+            cancelPendingDirectorySnapshot: { [weak self] in
+                self?.cancelPendingDirectorySnapshot()
+            },
+            tearDownDirectoryWatcher: { [weak self] in
+                self?.tearDownDirectoryWatcher()
+            },
+            sortCurrentItems: { [weak self] in
+                guard let self else { return }
+                sortCurrentItems(by: tableView.sortDescriptors)
+            },
+            updatePathField: { [weak self] in
+                self?.updatePathField()
+            },
+            updateStatusBar: { [weak self] in
+                self?.updateStatusBar()
+            },
+            reloadTableData: { [weak self] in
+                self?.tableView.reloadData()
+            },
             selectArchivePaths: { [weak self] paths in
                 self?.selectArchivePaths(paths)
+            },
+            hasDirtyNestedArchiveInstance: { [weak self] identity in
+                self?.hasDirtyNestedArchiveInstance(for: identity) == true
             },
             showError: { [weak self] error in
                 self?.showErrorAlert(error)
@@ -782,10 +810,10 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                                       openMode: FileManagerArchiveOpenMode = .defaultBehavior,
                                       showError: Bool = true) -> FileManagerArchiveOpenResult
     {
-        openArchiveInline(url,
-                          hostDirectory: hostDirectory,
-                          openMode: openMode,
-                          showError: showError)
+        archiveCoordinator.openArchiveInline(url,
+                                             hostDirectory: hostDirectory,
+                                             openMode: openMode,
+                                             showError: showError)
     }
 
     func openCommandFinishArchiveOpen(_ preparedResult: FileManagerPreparedArchiveOpenResult,
@@ -794,11 +822,11 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                                       replaceCurrentState: Bool,
                                       showError: Bool) -> FileManagerArchiveOpenResult
     {
-        finishArchiveOpen(preparedResult,
-                          temporaryDirectory: temporaryDirectory,
-                          preserveTemporaryDirectoryOnUnsupported: preserveTemporaryDirectoryOnUnsupported,
-                          replaceCurrentState: replaceCurrentState,
-                          showError: showError)
+        archiveCoordinator.finishArchiveOpen(preparedResult,
+                                             temporaryDirectory: temporaryDirectory,
+                                             preserveTemporaryDirectoryOnUnsupported: preserveTemporaryDirectoryOnUnsupported,
+                                             replaceCurrentState: replaceCurrentState,
+                                             showError: showError)
     }
 
     @discardableResult
@@ -820,7 +848,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     func openCommandCleanupTemporaryDirectory(_ temporaryDirectory: URL?) {
-        archiveSession.cleanupTemporaryDirectory(temporaryDirectory)
+        archiveCoordinator.cleanupTemporaryDirectory(temporaryDirectory)
     }
 
     func openCommandUnavailableExternalOpenError(for itemName: String) -> NSError {
@@ -848,7 +876,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     func navigationCommandNavigateArchiveSubdir(_ subdir: String) {
-        navigateArchiveSubdir(subdir)
+        archiveCoordinator.navigateSubdir(subdir)
     }
 
     @discardableResult
@@ -874,10 +902,10 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                                             openMode: FileManagerArchiveOpenMode = .defaultBehavior,
                                             showError: Bool = true) -> FileManagerArchiveOpenResult
     {
-        openArchiveInline(url,
-                          hostDirectory: hostDirectory,
-                          openMode: openMode,
-                          showError: showError)
+        archiveCoordinator.openArchiveInline(url,
+                                             hostDirectory: hostDirectory,
+                                             openMode: openMode,
+                                             showError: showError)
     }
 
     @discardableResult
@@ -1204,10 +1232,10 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     private func openFileSystemArchiveURL(_ fileURL: URL,
                                           hostDirectory: URL) -> Bool
     {
-        switch openArchiveInline(fileURL,
-                                 hostDirectory: hostDirectory,
-                                 showError: false,
-                                 replaceCurrentState: true)
+        switch archiveCoordinator.openArchiveInline(fileURL,
+                                                    hostDirectory: hostDirectory,
+                                                    showError: false,
+                                                    replaceCurrentState: true)
         {
         case .opened:
             focusFileList()
@@ -1429,17 +1457,15 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                      openMode: FileManagerArchiveOpenMode) -> Bool
     {
         let parentDirectory = url.deletingLastPathComponent()
-        let result = openArchiveInline(url,
-                                       hostDirectory: parentDirectory,
-                                       openMode: openMode,
-                                       replaceCurrentState: true)
+        let result = archiveCoordinator.openArchiveInline(url,
+                                                          hostDirectory: parentDirectory,
+                                                          openMode: openMode,
+                                                          replaceCurrentState: true)
         if case .opened = result {
             return true
         }
         return false
     }
-
-    // MARK: - Archive Extraction And Testing
 
     func extractSelectedArchiveItems(to destinationURL: URL,
                                      session: SZOperationSession? = nil,
@@ -2320,116 +2346,8 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
 // MARK: - Archive Inline Navigation (matches Panel.cpp _parentFolders stack)
 
 extension FileManagerPaneController {
-    @discardableResult
-    private func openArchiveInline(_ url: URL,
-                                   hostDirectory: URL? = nil,
-                                   temporaryDirectory: URL? = nil,
-                                   displayPathPrefix: String? = nil,
-                                   nestedWriteBackInfo: FileManagerNestedArchiveWriteBackInfo? = nil,
-                                   openMode: FileManagerArchiveOpenMode = .defaultBehavior,
-                                   showError: Bool = true,
-                                   preserveTemporaryDirectoryOnUnsupported: Bool = false,
-                                   replaceCurrentState: Bool = false) -> FileManagerArchiveOpenResult
-    {
-        let paneHostDirectory = hostDirectory ?? archiveHostDirectory()
-        let resolvedDisplayPathPrefix = displayPathPrefix ?? url.path
-        let progressParentWindow: NSWindow? = if let window = view.window, window.isVisible {
-            window
-        } else {
-            nil
-        }
-
-        let preparedResult = FileManagerArchiveOpenService.openSynchronously(url: url,
-                                                                             hostDirectory: paneHostDirectory,
-                                                                             temporaryDirectory: temporaryDirectory,
-                                                                             displayPathPrefix: resolvedDisplayPathPrefix,
-                                                                             parentWindow: progressParentWindow,
-                                                                             nestedWriteBackInfo: nestedWriteBackInfo,
-                                                                             openMode: openMode)
-
-        return finishArchiveOpen(preparedResult,
-                                 temporaryDirectory: temporaryDirectory,
-                                 preserveTemporaryDirectoryOnUnsupported: preserveTemporaryDirectoryOnUnsupported,
-                                 replaceCurrentState: replaceCurrentState,
-                                 showError: showError)
-    }
-
-    private func finishArchiveOpen(_ preparedResult: FileManagerPreparedArchiveOpenResult,
-                                   temporaryDirectory: URL?,
-                                   preserveTemporaryDirectoryOnUnsupported: Bool,
-                                   replaceCurrentState: Bool,
-                                   showError: Bool) -> FileManagerArchiveOpenResult
-    {
-        let result: FileManagerArchiveOpenResult
-        switch preparedResult {
-        case let .opened(prepared):
-            if let nestedIdentity = prepared.nestedWriteBackInfo?.identity,
-               hasDirtyNestedArchiveInstance(for: nestedIdentity)
-            {
-                prepared.archive.close()
-                archiveSession.cleanupTemporaryDirectory(prepared.temporaryDirectory)
-                result = .failed(paneOperationError(SZL10n.string("app.fileManager.error.nestedArchiveDirty")))
-                break
-            }
-
-            if commitPreparedArchive(prepared, replaceCurrentState: replaceCurrentState) {
-                return .opened
-            }
-            return .cancelled
-        case let .unsupportedArchive(error):
-            if !preserveTemporaryDirectoryOnUnsupported {
-                archiveSession.cleanupTemporaryDirectory(temporaryDirectory)
-            }
-            result = .unsupportedArchive(error)
-        case .cancelled:
-            archiveSession.cleanupTemporaryDirectory(temporaryDirectory)
-            result = .cancelled
-        case let .failed(error):
-            archiveSession.cleanupTemporaryDirectory(temporaryDirectory)
-            result = .failed(error)
-        }
-
-        if showError {
-            switch result {
-            case let .unsupportedArchive(error), let .failed(error):
-                showErrorAlert(error)
-            case .opened, .cancelled:
-                break
-            }
-        }
-
-        return result
-    }
-
-    private func commitPreparedArchive(_ prepared: FileManagerPreparedArchiveOpen,
-                                       replaceCurrentState: Bool) -> Bool
-    {
-        if replaceCurrentState, !closeAllArchives(showError: true) {
-            prepared.archive.close()
-            archiveSession.cleanupTemporaryDirectory(prepared.temporaryDirectory)
-            return false
-        }
-
-        currentDirectory = prepared.hostDirectory
-        recordDirectoryVisit(prepared.hostDirectory)
-        cancelPendingDirectorySnapshot()
-        tearDownDirectoryWatcher()
-        archiveSession.appendPreparedArchive(prepared)
-        presentCurrentArchiveSubdir()
-        return true
-    }
-
     func navigateArchiveSubdir(_ subdir: String) {
-        guard archiveSession.navigateSubdir(subdir) else { return }
-        presentCurrentArchiveSubdir()
-    }
-
-    private func presentCurrentArchiveSubdir() {
-        updateTableColumnsForCurrentLocation()
-        sortCurrentItems(by: tableView.sortDescriptors)
-        updatePathField()
-        updateStatusBar()
-        tableView.reloadData()
+        archiveCoordinator.navigateSubdir(subdir)
     }
 }
 

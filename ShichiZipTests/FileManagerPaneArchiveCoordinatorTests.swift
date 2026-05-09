@@ -74,6 +74,50 @@ final class FileManagerPaneArchiveCoordinatorTests: XCTestCase {
         XCTAssertTrue(didUpdateTableColumns)
     }
 
+    func testFinishArchiveOpenCommitsPreparedArchiveAndPresentsSubdir() throws {
+        let session = FileManagerArchiveSession()
+        let prepared = try makePreparedArchive(named: "finish-open-commit",
+                                               entries: [
+                                                   makeArchiveItem(path: "folder/", isDirectory: true),
+                                                   makeArchiveItem(path: "folder/payload.txt"),
+                                               ])
+        var currentDirectory = FileManager.default.homeDirectoryForCurrentUser
+        var recordedDirectory: URL?
+        var didCancelDirectorySnapshot = false
+        var didTearDownDirectoryWatcher = false
+        var didUpdateTableColumns = false
+        var didReloadTableData = false
+        let coordinator = makeCoordinator(session: session,
+                                          currentDirectory: { currentDirectory },
+                                          setCurrentDirectory: { currentDirectory = $0 },
+                                          recordDirectoryVisit: { recordedDirectory = $0 },
+                                          cancelPendingDirectorySnapshot: { didCancelDirectorySnapshot = true },
+                                          tearDownDirectoryWatcher: { didTearDownDirectoryWatcher = true },
+                                          updateTableColumns: { didUpdateTableColumns = true },
+                                          reloadTableData: { didReloadTableData = true })
+        defer { _ = coordinator.closeAll(showError: false) }
+
+        let result = coordinator.finishArchiveOpen(.opened(prepared),
+                                                   temporaryDirectory: nil,
+                                                   preserveTemporaryDirectoryOnUnsupported: false,
+                                                   replaceCurrentState: false,
+                                                   showError: true)
+
+        guard case .opened = result else {
+            XCTFail("Expected archive open to commit")
+            return
+        }
+
+        XCTAssertEqual(session.currentLevel?.archivePath, prepared.archivePath)
+        XCTAssertEqual(session.displayItems.map(\.path), ["folder/"])
+        XCTAssertEqual(currentDirectory, prepared.hostDirectory)
+        XCTAssertEqual(recordedDirectory, prepared.hostDirectory)
+        XCTAssertTrue(didCancelDirectorySnapshot)
+        XCTAssertTrue(didTearDownDirectoryWatcher)
+        XCTAssertTrue(didUpdateTableColumns)
+        XCTAssertTrue(didReloadTableData)
+    }
+
     func testCloseNestedArchiveRestoresParentSubdirWhenViewIsLoaded() throws {
         let session = FileManagerArchiveSession()
         let parent = try makePreparedArchive(named: "parent",
@@ -88,7 +132,7 @@ final class FileManagerPaneArchiveCoordinatorTests: XCTestCase {
         var didPresentParentSubdir = false
         let coordinator = makeCoordinator(session: session,
                                           isViewLoaded: { true },
-                                          presentCurrentArchiveSubdir: { didPresentParentSubdir = true })
+                                          reloadTableData: { didPresentParentSubdir = true })
         defer { _ = coordinator.closeAll(showError: false) }
 
         XCTAssertTrue(coordinator.closeLevel(nestedLevel,
@@ -103,16 +147,26 @@ final class FileManagerPaneArchiveCoordinatorTests: XCTestCase {
     private func makeCoordinator(session: FileManagerArchiveSession,
                                  observerIdentifier: ObjectIdentifier = ObjectIdentifier(NSObject()),
                                  isViewLoaded: @escaping () -> Bool = { false },
-                                 presentCurrentArchiveSubdir: @escaping () -> Void = {},
+                                 currentDirectory: @escaping () -> URL = { FileManager.default.homeDirectoryForCurrentUser },
+                                 setCurrentDirectory: @escaping (URL) -> Void = { _ in },
+                                 recordDirectoryVisit: @escaping (URL) -> Void = { _ in },
+                                 cancelPendingDirectorySnapshot: @escaping () -> Void = {},
+                                 tearDownDirectoryWatcher: @escaping () -> Void = {},
                                  updateTableColumns: @escaping () -> Void = {},
+                                 reloadTableData: @escaping () -> Void = {},
                                  selectArchivePaths: @escaping ([String]) -> Void = { _ in }) -> FileManagerPaneArchiveCoordinator
     {
         FileManagerPaneArchiveCoordinator(archiveSession: session,
                                           observerIdentifier: observerIdentifier,
                                           parentWindow: { nil },
                                           isViewLoaded: isViewLoaded,
-                                          presentCurrentArchiveSubdir: presentCurrentArchiveSubdir,
                                           updateTableColumns: updateTableColumns,
+                                          currentDirectory: currentDirectory,
+                                          setCurrentDirectory: setCurrentDirectory,
+                                          recordDirectoryVisit: recordDirectoryVisit,
+                                          cancelPendingDirectorySnapshot: cancelPendingDirectorySnapshot,
+                                          tearDownDirectoryWatcher: tearDownDirectoryWatcher,
+                                          reloadTableData: reloadTableData,
                                           selectArchivePaths: selectArchivePaths,
                                           showError: { error in
                                               XCTFail("Unexpected archive coordinator error: \(error)")
