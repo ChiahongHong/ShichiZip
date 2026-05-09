@@ -80,6 +80,7 @@ final class FileManagerPaneSnapshotTests: XCTestCase {
 
     private static func unavailableCapabilities() -> FileManagerPaneCapabilities {
         FileManagerPaneCapabilities(canOpenSelection: false,
+                                    canOpenArchiveInViewer: false,
                                     canOpenSelectionInside: false,
                                     canOpenSelectionOutside: false,
                                     canAddSelectedItemsToArchive: false,
