@@ -748,59 +748,87 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     // MARK: - Command Entry Points
 
     func openSelection() {
-        openSelectedItem(nil)
+        FileManagerPaneOpenCommandSupport.openSelection(in: self)
     }
 
     func openSelectionInside(_ openMode: FileManagerArchiveOpenMode) {
-        guard let item = selectedSingleRealPaneItem() else { return }
-
-        switch item {
-        case .parent:
-            return
-
-        case let .filesystem(fileSystemItem):
-            if fileSystemItem.isDirectory {
-                loadDirectory(fileSystemItem.url)
-            } else {
-                _ = openArchiveInline(fileSystemItem.url,
-                                      hostDirectory: currentDirectory,
-                                      openMode: openMode)
-            }
-
-        case let .archive(archiveItem):
-            if archiveItem.isDirectory {
-                navigateArchiveSubdir(archiveItem.pathParts.joined(separator: "/"))
-            } else {
-                openItemInArchive(archiveItem, strategy: .forceInternal(openMode))
-            }
-        }
+        FileManagerPaneOpenCommandSupport.openSelectionInside(openMode,
+                                                              in: self)
     }
 
     func openSelectionOutside() {
-        guard let item = selectedSingleRealPaneItem() else { return }
+        FileManagerPaneOpenCommandSupport.openSelectionOutside(in: self)
+    }
 
-        switch item {
-        case .parent:
-            return
+    var openCommandActivationRow: Int {
+        tableView.clickedRow >= 0 ? tableView.clickedRow : tableView.selectedRow
+    }
 
-        case let .filesystem(fileSystemItem):
-            if fileSystemItem.isDirectory {
-                _ = NSWorkspace.shared.open(fileSystemItem.url)
-                return
-            }
+    func openCommandItem(at row: Int) -> FileManagerPaneItem? {
+        paneItem(at: row)
+    }
 
-            if !openExternallyIfPossible(fileSystemItem.url) {
-                showErrorAlert(unavailableExternalOpenError(for: fileSystemItem.name))
-            }
+    func openCommandArchiveItemWorkflowContext() -> FileManagerArchiveItemWorkflowContext? {
+        currentArchiveItemWorkflowContext()
+    }
 
-        case let .archive(archiveItem):
-            guard !archiveItem.isDirectory,
-                  let context = currentArchiveItemWorkflowContext() else { return }
+    var openCommandItemWorkflowService: FileManagerArchiveItemWorkflowService {
+        archiveSession.itemWorkflowService
+    }
 
-            openArchiveItemExternally(archiveItem,
-                                      context: context,
-                                      strategy: .forceExternal)
-        }
+    @discardableResult
+    func openCommandOpenArchiveInline(_ url: URL,
+                                      hostDirectory: URL? = nil,
+                                      openMode: FileManagerArchiveOpenMode = .defaultBehavior,
+                                      showError: Bool = true) -> FileManagerArchiveOpenResult
+    {
+        openArchiveInline(url,
+                          hostDirectory: hostDirectory,
+                          openMode: openMode,
+                          showError: showError)
+    }
+
+    func openCommandFinishArchiveOpen(_ preparedResult: FileManagerPreparedArchiveOpenResult,
+                                      temporaryDirectory: URL?,
+                                      preserveTemporaryDirectoryOnUnsupported: Bool,
+                                      replaceCurrentState: Bool,
+                                      showError: Bool) -> FileManagerArchiveOpenResult
+    {
+        finishArchiveOpen(preparedResult,
+                          temporaryDirectory: temporaryDirectory,
+                          preserveTemporaryDirectoryOnUnsupported: preserveTemporaryDirectoryOnUnsupported,
+                          replaceCurrentState: replaceCurrentState,
+                          showError: showError)
+    }
+
+    @discardableResult
+    func openCommandOpenExternallyIfPossible(_ url: URL,
+                                             preservingTemporaryDirectory temporaryDirectory: URL? = nil) -> Bool
+    {
+        openExternallyIfPossible(url,
+                                 preservingTemporaryDirectory: temporaryDirectory)
+    }
+
+    @discardableResult
+    func openCommandOpenExternally(_ url: URL,
+                                   withApplicationAt applicationURL: URL,
+                                   preservingTemporaryDirectory temporaryDirectory: URL? = nil) -> Bool
+    {
+        openExternally(url,
+                       withApplicationAt: applicationURL,
+                       preservingTemporaryDirectory: temporaryDirectory)
+    }
+
+    func openCommandCleanupTemporaryDirectory(_ temporaryDirectory: URL?) {
+        archiveSession.cleanupTemporaryDirectory(temporaryDirectory)
+    }
+
+    func openCommandUnavailableExternalOpenError(for itemName: String) -> NSError {
+        unavailableExternalOpenError(for: itemName)
+    }
+
+    func openCommandShowError(_ error: Error) {
+        showErrorAlert(error)
     }
 
     func goUpOneLevel() {
@@ -1320,57 +1348,6 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         case .filesystem:
             .filesystem(isDirectory: isDirectory,
                         iconPath: iconPath)
-        }
-    }
-
-    // MARK: - Item Activation
-
-    private func activatePaneItem(at row: Int) {
-        guard let item = paneItem(at: row) else { return }
-
-        switch item {
-        case .parent:
-            goUp()
-
-        case let .archive(archiveItem):
-            if archiveItem.isDirectory {
-                navigateArchiveSubdir(archiveItem.pathParts.joined(separator: "/"))
-            } else {
-                openItemInArchive(archiveItem)
-            }
-
-        case let .filesystem(fileSystemItem):
-            if fileSystemItem.isDirectory {
-                loadDirectory(fileSystemItem.url)
-            } else {
-                if FileManagerExternalOpenRouter.shouldOpenExternallyBeforeArchiveAttempt(fileSystemItem.url) {
-                    if !openExternallyIfPossible(fileSystemItem.url) {
-                        showErrorAlert(unavailableExternalOpenError(for: fileSystemItem.name))
-                    }
-                    return
-                }
-
-                switch openArchiveInline(fileSystemItem.url,
-                                         hostDirectory: currentDirectory,
-                                         showError: false)
-                {
-                case .opened:
-                    break
-                case let .unsupportedArchive(error):
-                    let shouldFallbackExternally = FileManagerExternalOpenRouter.shouldFallbackUnsupportedArchiveExternally(for: fileSystemItem.url)
-                    if shouldFallbackExternally {
-                        if !openExternallyIfPossible(fileSystemItem.url) {
-                            showErrorAlert(error)
-                        }
-                    } else {
-                        showErrorAlert(error)
-                    }
-                case .cancelled:
-                    break
-                case let .failed(error):
-                    showErrorAlert(error)
-                }
-            }
         }
     }
 
@@ -2176,7 +2153,8 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
 
     @objc private func doubleClickRow(_: Any?) {
         let row = tableView.clickedRow >= 0 ? tableView.clickedRow : tableView.selectedRow
-        activatePaneItem(at: row)
+        FileManagerPaneOpenCommandSupport.activateItem(at: row,
+                                                       in: self)
     }
 
     @objc private func singleClickRow(_: Any?) {
@@ -2188,161 +2166,8 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         guard modifiers.isEmpty else { return }
 
         let row = tableView.clickedRow >= 0 ? tableView.clickedRow : tableView.selectedRow
-        activatePaneItem(at: row)
-    }
-
-    private func openItemInArchive(_ item: ArchiveItem,
-                                   strategy: FileManagerArchiveItemOpenStrategy = .automatic)
-    {
-        guard item.index >= 0,
-              let context = currentArchiveItemWorkflowContext() else { return }
-
-        if case .forceExternal = strategy {
-            openArchiveItemExternally(item,
-                                      context: context,
-                                      strategy: strategy)
-            return
-        }
-
-        if case .automatic = strategy,
-           FileManagerExternalOpenRouter.shouldOpenExternallyBeforeArchiveAttempt(archiveItemPath: item.path)
-        {
-            openArchiveItemExternally(item,
-                                      context: context,
-                                      strategy: strategy)
-            return
-        }
-
-        let openMode: FileManagerArchiveOpenMode
-        let preserveTemporaryDirectoryOnUnsupported: Bool
-        switch strategy {
-        case .automatic:
-            openMode = .defaultBehavior
-            preserveTemporaryDirectoryOnUnsupported = true
-        case let .forceInternal(mode):
-            openMode = mode
-            preserveTemporaryDirectoryOnUnsupported = false
-        case .forceExternal:
-            return
-        }
-
-        openArchiveItemInternally(item,
-                                  context: context,
-                                  openMode: openMode,
-                                  preserveTemporaryDirectoryOnUnsupported: preserveTemporaryDirectoryOnUnsupported)
-    }
-
-    private func openArchiveItemExternally(_ item: ArchiveItem,
-                                           context: FileManagerArchiveItemWorkflowContext,
-                                           strategy: FileManagerArchiveItemOpenStrategy)
-    {
-        let displayPath = context.displayPath(for: item)
-
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-
-            do {
-                let preparedOpen = try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("progress.extracting"),
-                                                                        initialFileName: displayPath,
-                                                                        parentWindow: view.window,
-                                                                        deferredDisplay: true)
-                { [archiveSession] session in
-                    try archiveSession.itemWorkflowService.prepareExternalArchiveItemOpen(for: item,
-                                                                                          context: context,
-                                                                                          strategy: strategy,
-                                                                                          session: session)
-                }
-
-                finishExternalArchiveItemOpen(preparedOpen,
-                                              itemName: item.name)
-            } catch {
-                showErrorAlert(error)
-            }
-        }
-    }
-
-    private func finishExternalArchiveItemOpen(_ preparedOpen: FileManagerPreparedArchiveItemExternalOpen,
-                                               itemName: String)
-    {
-        if let applicationURL = preparedOpen.applicationURL {
-            _ = openExternally(preparedOpen.stagedFileURL,
-                               withApplicationAt: applicationURL,
-                               preservingTemporaryDirectory: preparedOpen.temporaryDirectory)
-            return
-        }
-
-        if openExternallyIfPossible(preparedOpen.stagedFileURL,
-                                    preservingTemporaryDirectory: preparedOpen.temporaryDirectory)
-        {
-            return
-        }
-
-        archiveSession.cleanupTemporaryDirectory(preparedOpen.temporaryDirectory)
-        showErrorAlert(unavailableExternalOpenError(for: itemName))
-    }
-
-    private func openArchiveItemInternally(_ item: ArchiveItem,
-                                           context: FileManagerArchiveItemWorkflowContext,
-                                           openMode: FileManagerArchiveOpenMode,
-                                           preserveTemporaryDirectoryOnUnsupported: Bool)
-    {
-        let displayPath = context.displayPath(for: item)
-
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-
-            do {
-                let preparedOpen = try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("progress.opening"),
-                                                                        initialFileName: displayPath,
-                                                                        parentWindow: view.window,
-                                                                        deferredDisplay: true)
-                { [archiveSession] session in
-                    try archiveSession.itemWorkflowService.prepareInternalArchiveOpen(for: item,
-                                                                                      context: context,
-                                                                                      openMode: openMode,
-                                                                                      session: session)
-                }
-
-                let result = finishArchiveOpen(preparedOpen.preparedResult,
-                                               temporaryDirectory: preparedOpen.temporaryDirectory,
-                                               preserveTemporaryDirectoryOnUnsupported: preserveTemporaryDirectoryOnUnsupported,
-                                               replaceCurrentState: false,
-                                               showError: false)
-
-                switch result {
-                case .opened, .cancelled:
-                    return
-
-                case let .unsupportedArchive(error):
-                    guard preserveTemporaryDirectoryOnUnsupported else {
-                        showErrorAlert(error)
-                        return
-                    }
-
-                    let shouldFallbackExternally = FileManagerExternalOpenRouter.shouldFallbackUnsupportedArchiveExternally(for: preparedOpen.stagedArchiveURL)
-                    if shouldFallbackExternally {
-                        if let applicationURL = FileManagerExternalOpenRouter.defaultExternalApplicationURL(forArchiveItemPath: item.path) {
-                            _ = openExternally(preparedOpen.stagedArchiveURL,
-                                               withApplicationAt: applicationURL,
-                                               preservingTemporaryDirectory: preparedOpen.temporaryDirectory)
-                        } else if !openExternallyIfPossible(preparedOpen.stagedArchiveURL,
-                                                            preservingTemporaryDirectory: preparedOpen.temporaryDirectory)
-                        {
-                            archiveSession.cleanupTemporaryDirectory(preparedOpen.temporaryDirectory)
-                            showErrorAlert(error)
-                        }
-                    } else {
-                        archiveSession.cleanupTemporaryDirectory(preparedOpen.temporaryDirectory)
-                        showErrorAlert(error)
-                    }
-
-                case let .failed(error):
-                    showErrorAlert(error)
-                }
-            } catch {
-                showErrorAlert(error)
-            }
-        }
+        FileManagerPaneOpenCommandSupport.activateItem(at: row,
+                                                       in: self)
     }
 
     private func goUp() {
@@ -2685,7 +2510,7 @@ extension FileManagerPaneController {
     }
 
     @objc private func openSelectedItem(_: Any?) {
-        doubleClickRow(nil)
+        openSelection()
     }
 
     @objc private func openInArchiveViewer(_: Any?) {
