@@ -331,148 +331,24 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
     }
 
     @objc func addToArchive(_: Any?) {
-        let activePane = activePane
-        let snapshot = activePane.snapshot
-        guard snapshot.capabilities.canAddSelectedItemsToArchive else {
-            if snapshot.isVirtualLocation, !snapshot.acceptsFilePaste {
-                activePane.showReadOnlyArchiveMutationAlert(action: "Adding files to archive")
-            }
-            return
-        }
-
-        if snapshot.isVirtualLocation {
-            guard let target = activePane.currentArchiveMutationTarget() else {
-                activePane.showReadOnlyArchiveMutationAlert(action: "Adding files to archive")
-                return
-            }
-
-            FileManagerArchiveCommandSupport.promptForFilesToAddToOpenArchive(from: activePane,
-                                                                              target: target,
-                                                                              suggestedDirectory: suggestedArchiveAddSourceDirectory(for: activePane),
-                                                                              parentWindow: window)
-            return
-        }
-
-        let selectedURLs = snapshot.selection.fileURLs
-        guard !selectedURLs.isEmpty else { return }
-
-        let baseDirectory = snapshot.currentDirectoryURL
-        let parentWindow = window
-
-        Task { @MainActor [weak self, weak activePane] in
-            guard let self,
-                  let activePane
-            else {
-                return
-            }
-
-            let compressDialog = CompressDialogController(sourceURLs: selectedURLs,
-                                                          baseDirectory: baseDirectory)
-            guard let result = await compressDialog.runModal(for: parentWindow),
-                  let parentWindow
-            else {
-                return
-            }
-
-            do {
-                try await FileManagerArchiveCommandSupport.createArchive(from: selectedURLs,
-                                                                         result: result,
-                                                                         parentWindow: parentWindow)
-                activePane.refresh()
-                refreshPaneDisplayingDirectory(result.archiveURL.deletingLastPathComponent())
-            } catch {
-                showErrorAlert(error)
-            }
-        }
+        FileManagerArchiveCommandSupport.addToArchive(from: activePane,
+                                                      inactivePaneSnapshot: inactivePane?.snapshot,
+                                                      parentWindow: window,
+                                                      refreshPaneDisplayingDirectory: refreshPaneDisplayingDirectory,
+                                                      showError: showErrorAlert)
     }
 
     @objc func extractArchive(_: Any?) {
-        let activePane = activePane
-        let snapshot = activePane.snapshot
-        guard snapshot.capabilities.canExtractSelectionOrArchive else { return }
-
-        Task { @MainActor [weak self, weak activePane] in
-            guard let self,
-                  let activePane,
-                  let extractResult = await promptForArchiveDestination(from: activePane),
-                  let parentWindow = window
-            else {
-                return
-            }
-
-            let sourceArchiveURL = snapshot.sourceArchiveURLForPostProcessing
-            let isVirtualLocation = snapshot.isVirtualLocation
-            let archiveCandidateURL = isVirtualLocation ? nil : snapshot.selectedArchiveCandidateURL
-
-            do {
-                if isVirtualLocation {
-                    let prepared = try activePane.prepareExtraction(to: extractResult.destinationURL,
-                                                                    overwriteMode: extractResult.overwriteMode,
-                                                                    pathMode: extractResult.pathMode,
-                                                                    password: extractResult.password,
-                                                                    preserveNtSecurityInfo: extractResult.preserveNtSecurityInfo,
-                                                                    eliminateDuplicates: extractResult.eliminateDuplicates,
-                                                                    inheritDownloadedFileQuarantine: extractResult.inheritDownloadedFileQuarantine)
-                    try await FileManagerArchiveCommandSupport.extractPreparedArchiveItems(prepared,
-                                                                                           parentWindow: parentWindow)
-                } else {
-                    try await FileManagerArchiveCommandSupport.extractArchiveCandidate(archiveCandidateURL,
-                                                                                       result: extractResult,
-                                                                                       parentWindow: parentWindow)
-                }
-
-                let postProcessResult: ArchiveExtractionPostProcessResult
-                let postProcessError: Error?
-                do {
-                    postProcessResult = try ArchiveExtractionPostProcessor.finalizeExtraction(sourceArchiveURL: sourceArchiveURL,
-                                                                                              moveSourceArchiveToTrash: extractResult.moveArchiveToTrashAfterExtraction)
-                    postProcessError = nil
-                } catch {
-                    postProcessResult = ArchiveExtractionPostProcessResult(movedSourceArchiveToTrash: false)
-                    postProcessError = error
-                }
-                refreshPaneDisplayingDirectory(extractResult.destinationURL)
-                if postProcessResult.movedSourceArchiveToTrash,
-                   let sourceArchiveURL
-                {
-                    refreshPaneDisplayingDirectory(sourceArchiveURL.deletingLastPathComponent())
-                }
-                NSWorkspace.shared.open(extractResult.destinationURL)
-                if let postProcessError {
-                    showErrorAlert(postProcessError)
-                }
-            } catch {
-                showErrorAlert(error)
-            }
-        }
+        FileManagerArchiveCommandSupport.extractArchive(from: activePane,
+                                                        parentWindow: window,
+                                                        refreshPaneDisplayingDirectory: refreshPaneDisplayingDirectory,
+                                                        showError: showErrorAlert)
     }
 
     @objc func testArchive(_: Any?) {
-        let activePane = activePane
-        let snapshot = activePane.snapshot
-        guard snapshot.capabilities.canTestArchiveSelection else { return }
-
-        let isVirtualLocation = snapshot.isVirtualLocation
-        let archiveCandidateURL = isVirtualLocation ? nil : snapshot.selectedArchiveCandidateURL
-
-        Task { @MainActor [weak self] in
-            guard let self, let parentWindow = window else { return }
-            do {
-                if isVirtualLocation {
-                    let archive = try activePane.currentArchiveForTest()
-                    try await FileManagerArchiveCommandSupport.testPreparedArchive(archive,
-                                                                                   parentWindow: parentWindow)
-                } else {
-                    try await FileManagerArchiveCommandSupport.testArchiveCandidate(archiveCandidateURL,
-                                                                                    parentWindow: parentWindow)
-                }
-                szPresentMessage(title: SZL10n.string("app.fileManager.testOK"),
-                                 message: SZL10n.string("archive.noErrors"),
-                                 for: window)
-            } catch {
-                showErrorAlert(error)
-            }
-        }
+        FileManagerArchiveCommandSupport.testArchive(from: activePane,
+                                                     parentWindow: window,
+                                                     showError: showErrorAlert)
     }
 
     @objc func openSelectedItemInside(_: Any?) {
@@ -934,16 +810,6 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
                                              context: commandValidationContext)
     }
 
-    private func suggestedArchiveAddSourceDirectory(for targetPane: FileManagerPaneController) -> URL {
-        if let otherSnapshot = inactivePane?.snapshot,
-           !otherSnapshot.isVirtualLocation
-        {
-            return otherSnapshot.currentDirectoryURL.standardizedFileURL
-        }
-
-        return targetPane.snapshot.currentDirectoryURL.standardizedFileURL
-    }
-
     private func suggestedDestinationPath(for sourcePane: FileManagerPaneController) -> String {
         if let otherSnapshot = inactivePane?.snapshot {
             if let archivePath = otherSnapshot.currentArchiveDestinationDisplayPath {
@@ -956,19 +822,6 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
         }
 
         return szNormalizedDestinationDisplayPath(sourcePane.snapshot.currentDirectoryURL.standardizedFileURL.path)
-    }
-
-    private func promptForArchiveDestination(from sourcePane: FileManagerPaneController) async -> ExtractDialogResult? {
-        let snapshot = sourcePane.snapshot
-        let dialog = ExtractDialogController(suggestedDestinationURL: snapshot.currentDirectoryURL,
-                                             baseDirectory: snapshot.currentDirectoryURL,
-                                             message: snapshot.extractDialogInfoText,
-                                             defaultPathMode: snapshot.isVirtualLocation ? .currentPaths : .fullPaths,
-                                             showsCurrentPathsOption: snapshot.isVirtualLocation,
-                                             suggestedSplitDestinationName: snapshot.suggestedExtractDestinationName,
-                                             sourceArchiveAvailableForMoveToTrash: snapshot.sourceArchiveURLForPostProcessing != nil,
-                                             sourceArchiveAvailableForQuarantineInheritance: snapshot.quarantineSourceArchiveURLForExtraction != nil)
-        return await dialog.runModal(for: window)
     }
 
     private func promptForFileOperationDestination(forMove move: Bool,

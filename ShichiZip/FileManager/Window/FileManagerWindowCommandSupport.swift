@@ -2,6 +2,159 @@ import AppKit
 
 @MainActor
 enum FileManagerArchiveCommandSupport {
+    static func addToArchive(from activePane: FileManagerPaneController,
+                             inactivePaneSnapshot: FileManagerPaneSnapshot?,
+                             parentWindow: NSWindow?,
+                             refreshPaneDisplayingDirectory: @escaping @MainActor (URL) -> Void,
+                             showError: @escaping @MainActor (Error) -> Void)
+    {
+        let snapshot = activePane.snapshot
+        guard snapshot.capabilities.canAddSelectedItemsToArchive else {
+            if snapshot.isVirtualLocation, !snapshot.acceptsFilePaste {
+                activePane.showReadOnlyArchiveMutationAlert(action: SZL10n.string("app.fileManager.action.addingFilesToArchive"))
+            }
+            return
+        }
+
+        if snapshot.isVirtualLocation {
+            guard let target = activePane.currentArchiveMutationTarget() else {
+                activePane.showReadOnlyArchiveMutationAlert(action: SZL10n.string("app.fileManager.action.addingFilesToArchive"))
+                return
+            }
+
+            promptForFilesToAddToOpenArchive(from: activePane,
+                                             target: target,
+                                             suggestedDirectory: suggestedArchiveAddSourceDirectory(targetSnapshot: snapshot,
+                                                                                                    inactivePaneSnapshot: inactivePaneSnapshot),
+                                             parentWindow: parentWindow)
+            return
+        }
+
+        let selectedURLs = snapshot.selection.fileURLs
+        guard !selectedURLs.isEmpty else { return }
+
+        let baseDirectory = snapshot.currentDirectoryURL
+
+        Task { @MainActor [weak activePane, weak parentWindow] in
+            guard let activePane else { return }
+
+            let compressDialog = CompressDialogController(sourceURLs: selectedURLs,
+                                                          baseDirectory: baseDirectory)
+            guard let result = await compressDialog.runModal(for: parentWindow),
+                  let parentWindow
+            else {
+                return
+            }
+
+            do {
+                try await createArchive(from: selectedURLs,
+                                        result: result,
+                                        parentWindow: parentWindow)
+                activePane.refresh()
+                refreshPaneDisplayingDirectory(result.archiveURL.deletingLastPathComponent())
+            } catch {
+                showError(error)
+            }
+        }
+    }
+
+    static func extractArchive(from activePane: FileManagerPaneController,
+                               parentWindow: NSWindow?,
+                               refreshPaneDisplayingDirectory: @escaping @MainActor (URL) -> Void,
+                               showError: @escaping @MainActor (Error) -> Void)
+    {
+        let snapshot = activePane.snapshot
+        guard snapshot.capabilities.canExtractSelectionOrArchive else { return }
+
+        Task { @MainActor [weak activePane, weak parentWindow] in
+            guard let activePane,
+                  let extractResult = await promptForArchiveDestination(from: snapshot,
+                                                                        parentWindow: parentWindow),
+                  let parentWindow
+            else {
+                return
+            }
+
+            let sourceArchiveURL = snapshot.sourceArchiveURLForPostProcessing
+            let isVirtualLocation = snapshot.isVirtualLocation
+            let archiveCandidateURL = isVirtualLocation ? nil : snapshot.selectedArchiveCandidateURL
+
+            do {
+                if isVirtualLocation {
+                    let prepared = try activePane.prepareExtraction(to: extractResult.destinationURL,
+                                                                    overwriteMode: extractResult.overwriteMode,
+                                                                    pathMode: extractResult.pathMode,
+                                                                    password: extractResult.password,
+                                                                    preserveNtSecurityInfo: extractResult.preserveNtSecurityInfo,
+                                                                    eliminateDuplicates: extractResult.eliminateDuplicates,
+                                                                    inheritDownloadedFileQuarantine: extractResult.inheritDownloadedFileQuarantine)
+                    try await extractPreparedArchiveItems(prepared,
+                                                          parentWindow: parentWindow)
+                } else {
+                    try await extractArchiveCandidate(archiveCandidateURL,
+                                                      result: extractResult,
+                                                      parentWindow: parentWindow)
+                }
+
+                let postProcessResult: ArchiveExtractionPostProcessResult
+                let postProcessError: Error?
+                do {
+                    postProcessResult = try ArchiveExtractionPostProcessor.finalizeExtraction(sourceArchiveURL: sourceArchiveURL,
+                                                                                              moveSourceArchiveToTrash: extractResult.moveArchiveToTrashAfterExtraction)
+                    postProcessError = nil
+                } catch {
+                    postProcessResult = ArchiveExtractionPostProcessResult(movedSourceArchiveToTrash: false)
+                    postProcessError = error
+                }
+                refreshPaneDisplayingDirectory(extractResult.destinationURL)
+                if postProcessResult.movedSourceArchiveToTrash,
+                   let sourceArchiveURL
+                {
+                    refreshPaneDisplayingDirectory(sourceArchiveURL.deletingLastPathComponent())
+                }
+                NSWorkspace.shared.open(extractResult.destinationURL)
+                if let postProcessError {
+                    showError(postProcessError)
+                }
+            } catch {
+                showError(error)
+            }
+        }
+    }
+
+    static func testArchive(from activePane: FileManagerPaneController,
+                            parentWindow: NSWindow?,
+                            showError: @escaping @MainActor (Error) -> Void)
+    {
+        let snapshot = activePane.snapshot
+        guard snapshot.capabilities.canTestArchiveSelection else { return }
+
+        let isVirtualLocation = snapshot.isVirtualLocation
+        let archiveCandidateURL = isVirtualLocation ? nil : snapshot.selectedArchiveCandidateURL
+
+        Task { @MainActor [weak activePane, weak parentWindow] in
+            guard let activePane,
+                  let parentWindow
+            else { return }
+
+            do {
+                if isVirtualLocation {
+                    let archive = try activePane.currentArchiveForTest()
+                    try await testPreparedArchive(archive,
+                                                  parentWindow: parentWindow)
+                } else {
+                    try await testArchiveCandidate(archiveCandidateURL,
+                                                   parentWindow: parentWindow)
+                }
+                szPresentMessage(title: SZL10n.string("app.fileManager.testOK"),
+                                 message: SZL10n.string("archive.noErrors"),
+                                 for: parentWindow)
+            } catch {
+                showError(error)
+            }
+        }
+    }
+
     static func promptForFilesToAddToOpenArchive(from sourcePane: FileManagerPaneController,
                                                  target: (archive: SZArchive, subdir: String),
                                                  suggestedDirectory: URL,
@@ -156,6 +309,32 @@ enum FileManagerArchiveCommandSupport {
 
         return ArchiveItem.duplicateRootPrefixToStrip(for: items,
                                                       destinationLeafName: destinationURL.lastPathComponent)
+    }
+
+    private static func suggestedArchiveAddSourceDirectory(targetSnapshot: FileManagerPaneSnapshot,
+                                                           inactivePaneSnapshot: FileManagerPaneSnapshot?) -> URL
+    {
+        if let inactivePaneSnapshot,
+           !inactivePaneSnapshot.isVirtualLocation
+        {
+            return inactivePaneSnapshot.currentDirectoryURL.standardizedFileURL
+        }
+
+        return targetSnapshot.currentDirectoryURL.standardizedFileURL
+    }
+
+    private static func promptForArchiveDestination(from snapshot: FileManagerPaneSnapshot,
+                                                    parentWindow: NSWindow?) async -> ExtractDialogResult?
+    {
+        let dialog = ExtractDialogController(suggestedDestinationURL: snapshot.currentDirectoryURL,
+                                             baseDirectory: snapshot.currentDirectoryURL,
+                                             message: snapshot.extractDialogInfoText,
+                                             defaultPathMode: snapshot.isVirtualLocation ? .currentPaths : .fullPaths,
+                                             showsCurrentPathsOption: snapshot.isVirtualLocation,
+                                             suggestedSplitDestinationName: snapshot.suggestedExtractDestinationName,
+                                             sourceArchiveAvailableForMoveToTrash: snapshot.sourceArchiveURLForPostProcessing != nil,
+                                             sourceArchiveAvailableForQuarantineInheritance: snapshot.quarantineSourceArchiveURLForExtraction != nil)
+        return await dialog.runModal(for: parentWindow)
     }
 }
 
