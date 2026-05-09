@@ -831,6 +831,79 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         showErrorAlert(error)
     }
 
+    var navigationCommandIsInsideArchive: Bool {
+        isInsideArchive
+    }
+
+    var navigationCommandCurrentArchiveLevel: FileManagerArchiveLevel? {
+        archiveSession.currentLevel
+    }
+
+    @discardableResult
+    func navigationCommandLoadDirectory(_ url: URL,
+                                        showError: Bool = true) -> Bool
+    {
+        loadDirectory(url,
+                      showError: showError)
+    }
+
+    func navigationCommandNavigateArchiveSubdir(_ subdir: String) {
+        navigateArchiveSubdir(subdir)
+    }
+
+    @discardableResult
+    func navigationCommandCloseArchiveLevel(_ level: FileManagerArchiveLevel,
+                                            showError: Bool = false) -> Bool
+    {
+        closeArchiveLevel(level,
+                          showError: showError)
+    }
+
+    @discardableResult
+    func navigationCommandCloseAllArchives(showError: Bool = false) -> Bool {
+        closeAllArchives(showError: showError)
+    }
+
+    func navigationCommandCanOpenArchive(at url: URL) -> Bool {
+        canOpenArchive(at: url)
+    }
+
+    @discardableResult
+    func navigationCommandOpenArchiveInline(_ url: URL,
+                                            hostDirectory: URL? = nil,
+                                            openMode: FileManagerArchiveOpenMode = .defaultBehavior,
+                                            showError: Bool = true) -> FileManagerArchiveOpenResult
+    {
+        openArchiveInline(url,
+                          hostDirectory: hostDirectory,
+                          openMode: openMode,
+                          showError: showError)
+    }
+
+    @discardableResult
+    func navigationCommandOpenExternallyIfPossible(_ url: URL,
+                                                   preservingTemporaryDirectory temporaryDirectory: URL? = nil) -> Bool
+    {
+        openExternallyIfPossible(url,
+                                 preservingTemporaryDirectory: temporaryDirectory)
+    }
+
+    func navigationCommandUnavailableExternalOpenError(for itemName: String) -> NSError {
+        unavailableExternalOpenError(for: itemName)
+    }
+
+    func navigationCommandShowError(_ error: Error) {
+        showErrorAlert(error)
+    }
+
+    func navigationCommandRestorePathField() {
+        updatePathField()
+    }
+
+    func navigationCommandReturnFocusToFileList() {
+        view.window?.makeFirstResponder(tableView)
+    }
+
     func goUpOneLevel() {
         goUp()
     }
@@ -852,12 +925,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     func openRootFolder() {
-        if isInsideArchive {
-            navigateArchiveSubdir("")
-            return
-        }
-
-        loadDirectory(FileManagerFileSystemNavigation.rootURL(for: currentDirectory))
+        FileManagerPaneNavigationCommands.openRootFolder(in: self)
     }
 
     // MARK: - Recent Directories
@@ -871,10 +939,8 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     func openRecentDirectory(_ url: URL) {
-        if isInsideArchive, !closeAllArchives(showError: true) {
-            return
-        }
-        loadDirectory(url)
+        FileManagerPaneNavigationCommands.openRecentDirectory(url,
+                                                              in: self)
     }
 
     // MARK: - Selection Commands
@@ -1997,15 +2063,6 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         paneOperationError(SZL10n.string("app.fileManager.error.noAppToOpen", itemName))
     }
 
-    private func invalidAddressBarPathError(for path: String) -> NSError {
-        NSError(domain: NSCocoaErrorDomain,
-                code: NSFileNoSuchFileError,
-                userInfo: [
-                    NSFilePathErrorKey: path,
-                    NSLocalizedDescriptionKey: SZL10n.string("app.fileManager.error.pathNotFound", path),
-                ])
-    }
-
     private func showErrorAlert(_ error: Error) {
         szPresentError(error, for: view.window)
     }
@@ -2056,67 +2113,8 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
 
     @objc private func pathFieldSubmitted(_ sender: NSTextField) {
         delegate?.paneDidBecomeActive(self)
-        let path = sender.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if path.isEmpty { return }
-
-        switch FileManagerFileSystemNavigation.addressBarTarget(for: path) {
-        case let .directory(url):
-            guard closeAllArchives(showError: true) else {
-                updatePathField()
-                return
-            }
-            loadDirectory(url)
-        case let .file(url, hostDirectory):
-            if FileManagerExternalOpenRouter.shouldOpenExternallyBeforeArchiveAttempt(url) {
-                updatePathField()
-                if !openExternallyIfPossible(url) {
-                    showErrorAlert(unavailableExternalOpenError(for: url.lastPathComponent))
-                }
-                view.window?.makeFirstResponder(tableView)
-                return
-            }
-
-            if isInsideArchive, !canOpenArchive(at: url) {
-                updatePathField()
-                if !openExternallyIfPossible(url) {
-                    showErrorAlert(unavailableExternalOpenError(for: url.lastPathComponent))
-                }
-                view.window?.makeFirstResponder(tableView)
-                return
-            }
-
-            guard closeAllArchives(showError: true) else {
-                updatePathField()
-                return
-            }
-            switch openArchiveInline(url,
-                                     hostDirectory: hostDirectory,
-                                     showError: false)
-            {
-            case .opened:
-                break
-            case let .unsupportedArchive(error):
-                updatePathField()
-                let shouldFallbackExternally = FileManagerExternalOpenRouter.shouldFallbackUnsupportedArchiveExternally(for: url)
-                if shouldFallbackExternally {
-                    if !openExternallyIfPossible(url) {
-                        showErrorAlert(error)
-                    }
-                } else {
-                    showErrorAlert(error)
-                }
-            case .cancelled:
-                updatePathField()
-            case let .failed(error):
-                updatePathField()
-                showErrorAlert(error)
-            }
-        case nil:
-            updatePathField()
-            showErrorAlert(invalidAddressBarPathError(for: path))
-        }
-        // Resign focus back to table
-        view.window?.makeFirstResponder(tableView)
+        FileManagerPaneNavigationCommands.submitPath(sender.stringValue,
+                                                     in: self)
     }
 
     @objc private func goUpClicked(_: Any?) {
@@ -2171,31 +2169,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     private func goUp() {
-        if isInsideArchive {
-            guard let level = archiveSession.currentLevel else { return }
-            if !level.currentSubdir.isEmpty {
-                let parent = if let lastSlash = level.currentSubdir.lastIndex(of: "/") {
-                    String(level.currentSubdir[level.currentSubdir.startIndex ..< lastSlash])
-                } else {
-                    ""
-                }
-                navigateArchiveSubdir(parent)
-            } else {
-                let fsDir = level.filesystemDirectory
-                guard closeArchiveLevel(level, showError: true) else {
-                    return
-                }
-                if !isInsideArchive {
-                    loadDirectory(fsDir)
-                } else {
-                    guard let outer = archiveSession.currentLevel else { return }
-                    navigateArchiveSubdir(outer.currentSubdir)
-                }
-            }
-        } else {
-            let parent = currentDirectory.deletingLastPathComponent()
-            loadDirectory(parent)
-        }
+        FileManagerPaneNavigationCommands.goUp(in: self)
     }
 
     // MARK: - NSTableViewDataSource / NSTableViewDelegate
