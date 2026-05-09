@@ -6,9 +6,6 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     // MARK: - Types
 
     private static let addressBarIconSize: CGFloat = 14
-    private static var directorySnapshotQueueLabel: String {
-        "\(Bundle.main.bundleIdentifier ?? "ShichiZip").file-manager.directory-snapshot"
-    }
 
     // MARK: - Properties
 
@@ -30,13 +27,8 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     private var liveScrollEndObserver: NSObjectProtocol?
     private var columnDidMoveObserver: NSObjectProtocol?
     private var columnDidResizeObserver: NSObjectProtocol?
-    private var recentDirectories: [URL] = []
     private var isLiveScrolling = false
     private var pendingAutoRefresh = false
-    private var directorySnapshotGeneration = 0
-    private let directorySnapshotQueue = DispatchQueue(label: FileManagerPaneController.directorySnapshotQueueLabel,
-                                                       qos: .userInitiated)
-    private var directoryWatcher: DirectoryWatcher?
     private let iconProvider = FileManagerPaneIconProvider(iconSize: NSSize(width: 16, height: 16))
     private let transferCoordinator = FileManagerPaneTransferCoordinator()
     private var iconSize: NSSize {
@@ -44,16 +36,78 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     private let listRowHeight: CGFloat = 22
-    private var currentDirectoryFingerprint: [FileManagerDirectorySnapshot.EntryFingerprint] = []
     private(set) var isSuspended = false
     private var suspendedOverlay: NSView?
 
-    private(set) var currentDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    var currentDirectory: URL {
+        directoryCoordinator.currentDirectory
+    }
+
     var currentDirectoryURL: URL {
         currentDirectory
     }
 
-    private var items: [FileSystemItem] = []
+    private lazy var directoryCoordinator = FileManagerPaneDirectoryCoordinator(
+        isViewLoaded: { [weak self] in
+            self?.isViewLoaded == true
+        },
+        isInsideArchive: { [weak self] in
+            self?.isInsideArchive == true
+        },
+        showsParentRow: { [weak self] in
+            self?.showsParentRow == true
+        },
+        selectedFileSystemItems: { [weak self] in
+            self?.selectedFileSystemItems() ?? []
+        },
+        focusedFileSystemItemPath: { [weak self] in
+            guard let self,
+                  let focusedItem = paneItem(at: tableView.selectedRow),
+                  case let .filesystem(item) = focusedItem
+            else {
+                return nil
+            }
+            return item.url.standardizedFileURL.path
+        },
+        clearSuspendedState: { [weak self] in
+            self?.clearSuspendedState()
+        },
+        updatePathField: { [weak self] in
+            self?.updatePathField()
+        },
+        updateStatusBar: { [weak self] in
+            self?.updateStatusBar()
+        },
+        updateTableColumns: { [weak self] in
+            self?.updateTableColumnsForCurrentLocation()
+        },
+        sortCurrentItems: { [weak self] in
+            guard let self else { return }
+            sortCurrentItems(by: tableView.sortDescriptors)
+        },
+        reloadTableData: { [weak self] in
+            self?.tableView.reloadData()
+        },
+        focusFileList: { [weak self] in
+            self?.focusFileList()
+        },
+        selectRows: { [weak self] rows in
+            self?.tableView.selectRowIndexes(rows,
+                                             byExtendingSelection: false)
+        },
+        deselectRows: { [weak self] in
+            self?.tableView.deselectAll(nil)
+        },
+        scrollRowToVisible: { [weak self] row in
+            self?.tableView.scrollRowToVisible(row)
+        },
+        showError: { [weak self] error in
+            self?.showErrorAlert(error)
+        },
+        directoryDidChange: { [weak self] in
+            self?.autoRefreshIfPossible()
+        },
+    )
 
     private let archiveSession = FileManagerArchiveSession()
     private var archiveCoordinatorStorage: FileManagerPaneArchiveCoordinator?
@@ -80,19 +134,10 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                 self?.updateTableColumnsForCurrentLocation()
             },
             currentDirectory: { [weak self] in
-                self?.currentDirectory ?? FileManager.default.homeDirectoryForCurrentUser
+                self?.directoryCoordinator.currentDirectory ?? FileManager.default.homeDirectoryForCurrentUser
             },
-            setCurrentDirectory: { [weak self] url in
-                self?.currentDirectory = url
-            },
-            recordDirectoryVisit: { [weak self] url in
-                self?.recordDirectoryVisit(url)
-            },
-            cancelPendingDirectorySnapshot: { [weak self] in
-                self?.cancelPendingDirectorySnapshot()
-            },
-            tearDownDirectoryWatcher: { [weak self] in
-                self?.tearDownDirectoryWatcher()
+            prepareDirectoryForArchivePresentation: { [weak self] hostDirectory in
+                self?.directoryCoordinator.prepareForArchivePresentation(hostDirectory: hostDirectory)
             },
             sortCurrentItems: { [weak self] in
                 guard let self else { return }
@@ -144,7 +189,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
             return FileManagerPaneTableModel(archiveItems: archiveSession.displayItems,
                                              showsParentRow: showsParentRow)
         }
-        return FileManagerPaneTableModel(fileSystemItems: items,
+        return FileManagerPaneTableModel(fileSystemItems: directoryCoordinator.items,
                                          showsParentRow: showsParentRow)
     }
 
@@ -176,8 +221,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
             NotificationCenter.default.removeObserver(columnDidResizeObserver)
         }
 
-        tearDownDirectoryWatcher()
-        cancelPendingDirectorySnapshot()
+        directoryCoordinator.tearDown()
         cancelPendingArchiveRefresh()
 
         let preservedTemporaryDirectories = preserveNestedArchiveTemporaryDirectories()
@@ -203,7 +247,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         applyFileManagerSettings()
 
         view = paneView
-        loadInitialDirectory(currentDirectory)
+        directoryCoordinator.loadInitialDirectory(currentDirectory)
     }
 
     private func connectPaneView(_ paneView: FileManagerPaneView) {
@@ -374,190 +418,32 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
 
     // MARK: - Navigation
 
-    private struct FileSystemSelectionState {
-        let selectedPaths: Set<String>
-        let focusedPath: String?
-
-        static let empty = FileSystemSelectionState(selectedPaths: [], focusedPath: nil)
-    }
-
-    private enum DirectorySnapshotPurpose {
-        case refresh(selectionState: FileSystemSelectionState)
-        case autoRefresh(selectionState: FileSystemSelectionState)
-    }
-
     @discardableResult
     func loadDirectory(_ url: URL,
                        showError: Bool = true) -> Bool
     {
-        navigateToDirectory(url, showError: showError)
+        directoryCoordinator.loadDirectory(url,
+                                           showError: showError)
     }
 
     @discardableResult
     private func navigateToDirectory(_ url: URL,
                                      showError: Bool,
-                                     selectionState: FileSystemSelectionState? = nil,
+                                     selectionState: FileManagerFileSystemSelectionState? = nil,
                                      focusAfterLoad: Bool = false) -> Bool
     {
-        cancelPendingDirectorySnapshot()
-
-        do {
-            let snapshot = try FileManagerDirectorySnapshot.make(for: url.standardizedFileURL,
-                                                                 options: fileManagerDirectoryEnumerationOptions())
-            applyDirectorySnapshot(snapshot)
-            if isSuspended {
-                clearSuspendedState()
-            }
-            if let selectionState {
-                restoreFileSystemSelectionState(selectionState)
-            }
-            if focusAfterLoad {
-                focusFileList()
-            }
-            return true
-        } catch {
-            if showError {
-                showErrorAlert(error)
-            }
-            return false
-        }
-    }
-
-    private func fileManagerDirectoryEnumerationOptions() -> FileManager.DirectoryEnumerationOptions {
-        SZSettings.bool(.showHiddenFiles) ? [] : [.skipsHiddenFiles]
-    }
-
-    private func captureFileSystemSelectionState() -> FileSystemSelectionState {
-        guard isViewLoaded, !isInsideArchive else {
-            return .empty
-        }
-
-        let selectedPaths = Set(selectedFileSystemItems().map(\.url.standardizedFileURL.path))
-        let focusedPath: String? = if let focusedItem = paneItem(at: tableView.selectedRow),
-                                      case let .filesystem(item) = focusedItem
-        {
-            item.url.standardizedFileURL.path
-        } else {
-            selectedFileSystemItems().first?.url.standardizedFileURL.path
-        }
-
-        return FileSystemSelectionState(selectedPaths: selectedPaths, focusedPath: focusedPath)
-    }
-
-    private func restoreFileSystemSelectionState(_ selectionState: FileSystemSelectionState) {
-        guard !isInsideArchive else { return }
-
-        let baseRow = showsParentRow ? 1 : 0
-        let selectedRows = IndexSet(items.enumerated().compactMap { index, item in
-            selectionState.selectedPaths.contains(item.url.standardizedFileURL.path) ? baseRow + index : nil
-        })
-
-        if selectedRows.isEmpty {
-            tableView.deselectAll(nil)
-            return
-        }
-
-        tableView.selectRowIndexes(selectedRows, byExtendingSelection: false)
-
-        if let focusedPath = selectionState.focusedPath,
-           let row = items.firstIndex(where: { $0.url.standardizedFileURL.path == focusedPath }).map({ baseRow + $0 })
-        {
-            tableView.scrollRowToVisible(row)
-        } else if let firstRow = selectedRows.first {
-            tableView.scrollRowToVisible(firstRow)
-        }
+        directoryCoordinator.navigateToDirectory(url,
+                                                 showError: showError,
+                                                 selectionState: selectionState,
+                                                 focusAfterLoad: focusAfterLoad)
     }
 
     private func reloadCurrentDirectoryPreservingSelection() {
-        let selectionState = captureFileSystemSelectionState()
-        scheduleDirectorySnapshot(for: currentDirectory,
-                                  purpose: .refresh(selectionState: selectionState))
+        directoryCoordinator.reloadCurrentDirectoryPreservingSelection()
     }
 
     private func autoRefreshCurrentDirectoryIfNeeded() {
-        let selectionState = captureFileSystemSelectionState()
-        scheduleDirectorySnapshot(for: currentDirectory,
-                                  purpose: .autoRefresh(selectionState: selectionState))
-    }
-
-    private func scheduleDirectorySnapshot(for url: URL,
-                                           purpose: DirectorySnapshotPurpose)
-    {
-        directorySnapshotGeneration += 1
-        let generation = directorySnapshotGeneration
-        let options = fileManagerDirectoryEnumerationOptions()
-
-        directorySnapshotQueue.async {
-            let result = Result {
-                try FileManagerDirectorySnapshot.make(for: url,
-                                                      options: options)
-            }
-
-            DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated {
-                    self?.finishDirectorySnapshot(result,
-                                                  generation: generation,
-                                                  purpose: purpose)
-                }
-            }
-        }
-    }
-
-    private func cancelPendingDirectorySnapshot() {
-        directorySnapshotGeneration += 1
-    }
-
-    private func finishDirectorySnapshot(_ result: Result<FileManagerDirectorySnapshot, Error>,
-                                         generation: Int,
-                                         purpose: DirectorySnapshotPurpose)
-    {
-        guard generation == directorySnapshotGeneration else { return }
-
-        switch result {
-        case let .success(snapshot):
-            guard !isInsideArchive else { return }
-
-            switch purpose {
-            case let .autoRefresh(selectionState):
-                guard snapshot.url.standardizedFileURL == currentDirectory.standardizedFileURL else { return }
-                guard snapshot.fingerprint != currentDirectoryFingerprint else { return }
-                applyDirectorySnapshot(snapshot)
-                restoreFileSystemSelectionState(selectionState)
-
-            case let .refresh(selectionState):
-                guard snapshot.url.standardizedFileURL == currentDirectory.standardizedFileURL else { return }
-                applyDirectorySnapshot(snapshot)
-                restoreFileSystemSelectionState(selectionState)
-            }
-
-        case .failure:
-            return
-        }
-    }
-
-    private func loadInitialDirectory(_ url: URL) {
-        do {
-            let snapshot = try FileManagerDirectorySnapshot.make(for: url.standardizedFileURL,
-                                                                 options: fileManagerDirectoryEnumerationOptions())
-            applyDirectorySnapshot(snapshot)
-        } catch {
-            currentDirectory = url.standardizedFileURL
-            updatePathField()
-            updateStatusBar()
-        }
-    }
-
-    private func applyDirectorySnapshot(_ snapshot: FileManagerDirectorySnapshot) {
-        currentDirectory = snapshot.url
-        recordDirectoryVisit(snapshot.url)
-        updatePathField()
-        currentDirectoryFingerprint = snapshot.fingerprint
-        items = snapshot.items
-        updateTableColumnsForCurrentLocation()
-        sortCurrentItems(by: tableView.sortDescriptors)
-        tableView.reloadData()
-        updateStatusBar()
-        installDirectoryWatcher(for: snapshot.url)
+        directoryCoordinator.autoRefreshCurrentDirectoryIfNeeded()
     }
 
     private func columnsForCurrentLocation() -> [FileManagerColumn] {
@@ -622,20 +508,6 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         suspendedOverlay = nil
     }
 
-    private func installDirectoryWatcher(for url: URL) {
-        directoryWatcher?.stop()
-        let watcher = DirectoryWatcher(directory: url)
-        watcher.onChange = { [weak self] in
-            self?.autoRefreshIfPossible()
-        }
-        directoryWatcher = watcher
-    }
-
-    private func tearDownDirectoryWatcher() {
-        directoryWatcher?.stop()
-        directoryWatcher = nil
-    }
-
     // MARK: - Pane Refresh And Focus
 
     func refresh() {
@@ -651,7 +523,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         guard isViewLoaded else { return }
         guard FileManagerViewPreferences.autoRefreshEnabled else { return }
         guard !isInsideArchive else { return }
-        guard directoryWatcher?.wasChanged() == true else { return }
+        guard directoryCoordinator.consumeDirectoryChange() else { return }
         guard !isLiveScrolling else {
             pendingAutoRefresh = true
             return
@@ -750,7 +622,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                                     canGoUp: isInsideArchive || currentDirectory.path != currentDirectory.deletingLastPathComponent().path,
                                     canSelectVisibleItems: numberOfRows(in: tableView) > (showsParentRow ? 1 : 0),
                                     canDeselectSelection: !tableView.selectedRowIndexes.isEmpty,
-                                    canShowFoldersHistory: !recentDirectories.isEmpty)
+                                    canShowFoldersHistory: directoryCoordinator.hasRecentDirectoryHistory)
     }
 
     func selectedArchiveCandidateURL() -> URL? {
@@ -959,11 +831,11 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     // MARK: - Recent Directories
 
     func recentDirectoryHistory() -> [URL] {
-        recentDirectories
+        directoryCoordinator.recentDirectoryHistory()
     }
 
     func setRecentDirectoryHistory(_ entries: [URL]) {
-        recentDirectories = FileManagerRecentDirectoryHistory.normalized(entries)
+        directoryCoordinator.setRecentDirectoryHistory(entries)
     }
 
     func openRecentDirectory(_ url: URL) {
@@ -1200,8 +1072,8 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
             return false
         }
 
-        let selectionState = FileSystemSelectionState(selectedPaths: target.selectedPaths,
-                                                      focusedPath: target.focusedPath)
+        let selectionState = FileManagerFileSystemSelectionState(selectedPaths: target.selectedPaths,
+                                                                 focusedPath: target.focusedPath)
         navigateToDirectory(target.parentDirectory,
                             showError: true,
                             selectionState: selectionState,
@@ -1327,7 +1199,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         let displayedSummary = if isInsideArchive {
             FileManagerItemPresentation.summary(for: archiveSession.displayItems)
         } else {
-            FileManagerItemPresentation.summary(for: items)
+            FileManagerItemPresentation.summary(for: directoryCoordinator.items)
         }
 
         let selectedSummary: FileManagerItemStatusSummary? = if isInsideArchive {
@@ -1338,11 +1210,6 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
 
         statusLabel.stringValue = FileManagerItemPresentation.statusBarText(displayed: displayedSummary,
                                                                             selected: selectedSummary)
-    }
-
-    private func recordDirectoryVisit(_ url: URL) {
-        recentDirectories = FileManagerRecentDirectoryHistory.recordingVisit(url,
-                                                                             in: recentDirectories)
     }
 
     // MARK: - Settings
@@ -1865,13 +1732,9 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         guard !isSuspended else { return }
         isSuspended = true
 
-        tearDownDirectoryWatcher()
-        cancelPendingDirectorySnapshot()
+        directoryCoordinator.prepareForSuspension()
         cancelPendingArchiveRefresh()
-        items.removeAll()
         archiveSession.clearDisplayItems()
-        currentDirectoryFingerprint.removeAll()
-        tableView.reloadData()
         statusLabel.stringValue = ""
 
         let overlay = NSView()
@@ -2131,7 +1994,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         if isInsideArchive {
             archiveSession.sortDisplayItems(by: descriptors)
         } else {
-            FileManagerItemSorting.sort(&items, by: descriptors)
+            directoryCoordinator.sortItems(by: descriptors)
         }
     }
 

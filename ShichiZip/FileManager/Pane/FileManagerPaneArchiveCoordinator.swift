@@ -7,10 +7,7 @@ final class FileManagerPaneArchiveCoordinator {
     private let parentWindow: () -> NSWindow?
     private let isViewLoaded: () -> Bool
     private let currentDirectory: () -> URL
-    private let setCurrentDirectory: (URL) -> Void
-    private let recordDirectoryVisit: (URL) -> Void
-    private let cancelPendingDirectorySnapshot: () -> Void
-    private let tearDownDirectoryWatcher: () -> Void
+    private let prepareDirectoryForArchivePresentation: (URL) -> Void
     private let updateTableColumns: () -> Void
     private let sortCurrentItems: () -> Void
     private let updatePathField: () -> Void
@@ -29,10 +26,7 @@ final class FileManagerPaneArchiveCoordinator {
          isViewLoaded: @escaping () -> Bool,
          updateTableColumns: @escaping () -> Void,
          currentDirectory: @escaping () -> URL = { FileManager.default.homeDirectoryForCurrentUser },
-         setCurrentDirectory: @escaping (URL) -> Void = { _ in },
-         recordDirectoryVisit: @escaping (URL) -> Void = { _ in },
-         cancelPendingDirectorySnapshot: @escaping () -> Void = {},
-         tearDownDirectoryWatcher: @escaping () -> Void = {},
+         prepareDirectoryForArchivePresentation: @escaping (URL) -> Void = { _ in },
          sortCurrentItems: @escaping () -> Void = {},
          updatePathField: @escaping () -> Void = {},
          updateStatusBar: @escaping () -> Void = {},
@@ -46,10 +40,7 @@ final class FileManagerPaneArchiveCoordinator {
         self.parentWindow = parentWindow
         self.isViewLoaded = isViewLoaded
         self.currentDirectory = currentDirectory
-        self.setCurrentDirectory = setCurrentDirectory
-        self.recordDirectoryVisit = recordDirectoryVisit
-        self.cancelPendingDirectorySnapshot = cancelPendingDirectorySnapshot
-        self.tearDownDirectoryWatcher = tearDownDirectoryWatcher
+        self.prepareDirectoryForArchivePresentation = prepareDirectoryForArchivePresentation
         self.updateTableColumns = updateTableColumns
         self.sortCurrentItems = sortCurrentItems
         self.updatePathField = updatePathField
@@ -164,10 +155,7 @@ final class FileManagerPaneArchiveCoordinator {
             return false
         }
 
-        setCurrentDirectory(prepared.hostDirectory)
-        recordDirectoryVisit(prepared.hostDirectory)
-        cancelPendingDirectorySnapshot()
-        tearDownDirectoryWatcher()
+        prepareDirectoryForArchivePresentation(prepared.hostDirectory)
         archiveSession.appendPreparedArchive(prepared)
         presentCurrentArchiveSubdir()
         return true

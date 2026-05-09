@@ -82,17 +82,15 @@ final class FileManagerPaneArchiveCoordinatorTests: XCTestCase {
                                                    makeArchiveItem(path: "folder/payload.txt"),
                                                ])
         var currentDirectory = FileManager.default.homeDirectoryForCurrentUser
-        var recordedDirectory: URL?
-        var didCancelDirectorySnapshot = false
-        var didTearDownDirectoryWatcher = false
+        var preparedDirectory: URL?
         var didUpdateTableColumns = false
         var didReloadTableData = false
         let coordinator = makeCoordinator(session: session,
                                           currentDirectory: { currentDirectory },
-                                          setCurrentDirectory: { currentDirectory = $0 },
-                                          recordDirectoryVisit: { recordedDirectory = $0 },
-                                          cancelPendingDirectorySnapshot: { didCancelDirectorySnapshot = true },
-                                          tearDownDirectoryWatcher: { didTearDownDirectoryWatcher = true },
+                                          prepareDirectoryForArchivePresentation: { hostDirectory in
+                                              preparedDirectory = hostDirectory
+                                              currentDirectory = hostDirectory
+                                          },
                                           updateTableColumns: { didUpdateTableColumns = true },
                                           reloadTableData: { didReloadTableData = true })
         defer { _ = coordinator.closeAll(showError: false) }
@@ -111,9 +109,7 @@ final class FileManagerPaneArchiveCoordinatorTests: XCTestCase {
         XCTAssertEqual(session.currentLevel?.archivePath, prepared.archivePath)
         XCTAssertEqual(session.displayItems.map(\.path), ["folder/"])
         XCTAssertEqual(currentDirectory, prepared.hostDirectory)
-        XCTAssertEqual(recordedDirectory, prepared.hostDirectory)
-        XCTAssertTrue(didCancelDirectorySnapshot)
-        XCTAssertTrue(didTearDownDirectoryWatcher)
+        XCTAssertEqual(preparedDirectory, prepared.hostDirectory)
         XCTAssertTrue(didUpdateTableColumns)
         XCTAssertTrue(didReloadTableData)
     }
@@ -148,10 +144,7 @@ final class FileManagerPaneArchiveCoordinatorTests: XCTestCase {
                                  observerIdentifier: ObjectIdentifier = ObjectIdentifier(NSObject()),
                                  isViewLoaded: @escaping () -> Bool = { false },
                                  currentDirectory: @escaping () -> URL = { FileManager.default.homeDirectoryForCurrentUser },
-                                 setCurrentDirectory: @escaping (URL) -> Void = { _ in },
-                                 recordDirectoryVisit: @escaping (URL) -> Void = { _ in },
-                                 cancelPendingDirectorySnapshot: @escaping () -> Void = {},
-                                 tearDownDirectoryWatcher: @escaping () -> Void = {},
+                                 prepareDirectoryForArchivePresentation: @escaping (URL) -> Void = { _ in },
                                  updateTableColumns: @escaping () -> Void = {},
                                  reloadTableData: @escaping () -> Void = {},
                                  selectArchivePaths: @escaping ([String]) -> Void = { _ in }) -> FileManagerPaneArchiveCoordinator
@@ -162,10 +155,7 @@ final class FileManagerPaneArchiveCoordinatorTests: XCTestCase {
                                           isViewLoaded: isViewLoaded,
                                           updateTableColumns: updateTableColumns,
                                           currentDirectory: currentDirectory,
-                                          setCurrentDirectory: setCurrentDirectory,
-                                          recordDirectoryVisit: recordDirectoryVisit,
-                                          cancelPendingDirectorySnapshot: cancelPendingDirectorySnapshot,
-                                          tearDownDirectoryWatcher: tearDownDirectoryWatcher,
+                                          prepareDirectoryForArchivePresentation: prepareDirectoryForArchivePresentation,
                                           reloadTableData: reloadTableData,
                                           selectArchivePaths: selectArchivePaths,
                                           showError: { error in
