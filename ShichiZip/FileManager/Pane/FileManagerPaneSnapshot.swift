@@ -2,6 +2,7 @@ import Foundation
 
 struct FileManagerPaneCapabilities {
     let canOpenSelection: Bool
+    let canOpenArchiveInViewer: Bool
     let canOpenSelectionInside: Bool
     let canOpenSelectionOutside: Bool
     let canAddSelectedItemsToArchive: Bool
@@ -19,6 +20,40 @@ struct FileManagerPaneCapabilities {
     let canSelectVisibleItems: Bool
     let canDeselectSelection: Bool
     let canShowFoldersHistory: Bool
+}
+
+enum FileManagerPaneCommand {
+    case openSelection
+    case openArchiveInViewer
+    case addSelectedItemsToArchive
+    case extractSelectionOrArchive
+    case renameSelection
+    case deleteSelection
+    case createFolderHere
+    case showSelectedItemProperties
+}
+
+extension FileManagerPaneCapabilities {
+    func allows(_ command: FileManagerPaneCommand) -> Bool {
+        switch command {
+        case .openSelection:
+            canOpenSelection
+        case .openArchiveInViewer:
+            canOpenArchiveInViewer
+        case .addSelectedItemsToArchive:
+            canAddSelectedItemsToArchive
+        case .extractSelectionOrArchive:
+            canExtractSelectionOrArchive
+        case .renameSelection:
+            canRenameSelection
+        case .deleteSelection:
+            canDeleteSelection
+        case .createFolderHere:
+            canCreateFolderHere
+        case .showSelectedItemProperties:
+            canShowSelectedItemProperties
+        }
+    }
 }
 
 struct FileManagerPaneSelectionSnapshot {
@@ -103,6 +138,7 @@ extension FileManagerPaneController {
 
     private func makePaneCapabilities(selectedSingleFileSystemFile: FileSystemItem?) -> FileManagerPaneCapabilities {
         FileManagerPaneCapabilities(canOpenSelection: canOpenSelection(),
+                                    canOpenArchiveInViewer: selectedArchiveCandidateURL() != nil,
                                     canOpenSelectionInside: canOpenSelectionInside(),
                                     canOpenSelectionOutside: canOpenSelectionOutside(),
                                     canAddSelectedItemsToArchive: canAddSelectedItemsToArchive(),

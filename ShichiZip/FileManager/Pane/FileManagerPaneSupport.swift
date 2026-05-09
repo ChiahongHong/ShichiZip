@@ -17,6 +17,120 @@ enum FileManagerPaneItem {
     }
 }
 
+struct FileManagerPaneTableModel {
+    private enum Content {
+        case fileSystem([FileSystemItem])
+        case archive([ArchiveItem])
+
+        var count: Int {
+            switch self {
+            case let .fileSystem(items):
+                items.count
+            case let .archive(items):
+                items.count
+            }
+        }
+
+        func item(at index: Int) -> FileManagerPaneItem? {
+            switch self {
+            case let .fileSystem(items):
+                guard index >= 0, index < items.count else { return nil }
+                return .filesystem(items[index])
+            case let .archive(items):
+                guard index >= 0, index < items.count else { return nil }
+                return .archive(items[index])
+            }
+        }
+
+        var displayedArchiveItems: [ArchiveItem] {
+            guard case let .archive(items) = self else { return [] }
+            return items
+        }
+    }
+
+    private let content: Content
+    private let showsParentRow: Bool
+
+    init(fileSystemItems: [FileSystemItem],
+         showsParentRow: Bool)
+    {
+        content = .fileSystem(fileSystemItems)
+        self.showsParentRow = showsParentRow
+    }
+
+    init(archiveItems: [ArchiveItem],
+         showsParentRow: Bool)
+    {
+        content = .archive(archiveItems)
+        self.showsParentRow = showsParentRow
+    }
+
+    var rowCount: Int {
+        content.count + (showsParentRow ? 1 : 0)
+    }
+
+    func item(at row: Int) -> FileManagerPaneItem? {
+        if showsParentRow, row == 0 {
+            return .parent
+        }
+
+        let itemRow = row - (showsParentRow ? 1 : 0)
+        return content.item(at: itemRow)
+    }
+
+    func selectedItems(in selectedRowIndexes: IndexSet) -> [FileManagerPaneItem] {
+        selectedRowIndexes.compactMap { item(at: $0) }
+    }
+
+    func selectedRowsAndItems(in selectedRowIndexes: IndexSet,
+                              excludingParent: Bool = false) -> [(row: Int, item: FileManagerPaneItem)]
+    {
+        selectedRowIndexes.compactMap { row in
+            guard let item = item(at: row) else { return nil }
+            if excludingParent, case .parent = item {
+                return nil
+            }
+            return (row, item)
+        }
+    }
+
+    func selectedRealItems(in selectedRowIndexes: IndexSet) -> [FileManagerPaneItem] {
+        selectedItems(in: selectedRowIndexes).filter { item in
+            if case .parent = item {
+                return false
+            }
+            return true
+        }
+    }
+
+    func selectedSingleRealItem(in selectedRowIndexes: IndexSet) -> FileManagerPaneItem? {
+        let items = selectedRealItems(in: selectedRowIndexes)
+        guard items.count == 1 else { return nil }
+        return items[0]
+    }
+
+    func selectedFileSystemItems(in selectedRowIndexes: IndexSet) -> [FileSystemItem] {
+        selectedItems(in: selectedRowIndexes).compactMap(\.fileSystemItem)
+    }
+
+    func selectedArchiveItems(in selectedRowIndexes: IndexSet) -> [ArchiveItem] {
+        selectedItems(in: selectedRowIndexes).compactMap(\.archiveItem)
+    }
+
+    func paneItemsForSelectionOrDisplayedArchiveItems(in selectedRowIndexes: IndexSet) -> [FileManagerPaneItem] {
+        let selectedItems = selectedRealItems(in: selectedRowIndexes)
+        if !selectedItems.isEmpty {
+            return selectedItems
+        }
+        return content.displayedArchiveItems.map(FileManagerPaneItem.archive)
+    }
+
+    func archiveItemsForSelectionOrDisplayedItems(in selectedRowIndexes: IndexSet) -> [ArchiveItem] {
+        let selectedItems = selectedArchiveItems(in: selectedRowIndexes)
+        return selectedItems.isEmpty ? content.displayedArchiveItems : selectedItems
+    }
+}
+
 @MainActor
 struct FileManagerPaneRoutingContext {
     let leftPane: FileManagerPaneController
