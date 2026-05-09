@@ -33,7 +33,46 @@ enum FileManagerPaneCommand {
     case showSelectedItemProperties
 }
 
+struct FileManagerPaneCommandState {
+    let isInsideArchive: Bool
+    let supportsInPlaceArchiveMutation: Bool
+    let hasCurrentArchive: Bool
+    let canGoUp: Bool
+    let canSelectVisibleItems: Bool
+    let canDeselectSelection: Bool
+    let canShowFoldersHistory: Bool
+}
+
 extension FileManagerPaneCapabilities {
+    init(selection: FileManagerPaneSelectionState,
+         commandState: FileManagerPaneCommandState)
+    {
+        let hasFileSystemSelection = !selection.fileSystemItems.isEmpty
+        let hasArchiveSelection = !selection.archiveItems.isEmpty
+        let isInsideArchive = commandState.isInsideArchive
+        let supportsInPlaceArchiveMutation = commandState.supportsInPlaceArchiveMutation
+
+        self.init(canOpenSelection: !selection.items.isEmpty,
+                  canOpenArchiveInViewer: selection.archiveCandidateURL != nil,
+                  canOpenSelectionInside: selection.realItems.count == 1,
+                  canOpenSelectionOutside: Self.canOpenOutside(selection.singleRealItem),
+                  canAddSelectedItemsToArchive: isInsideArchive ? supportsInPlaceArchiveMutation : hasFileSystemSelection,
+                  canExtractSelectionOrArchive: isInsideArchive ? !selection.archiveItemsForSelectionOrDisplayedItems.isEmpty : selection.archiveCandidateURL != nil,
+                  canTestArchiveSelection: isInsideArchive ? commandState.hasCurrentArchive : selection.archiveCandidateURL != nil,
+                  canCopySelection: isInsideArchive ? hasArchiveSelection : hasFileSystemSelection,
+                  canMoveSelection: !isInsideArchive && hasFileSystemSelection,
+                  canRenameSelection: isInsideArchive ? supportsInPlaceArchiveMutation && selection.archiveItems.count == 1 : selection.fileSystemItems.count == 1,
+                  canCreateFolderHere: isInsideArchive ? supportsInPlaceArchiveMutation : true,
+                  canCreateFileHere: !isInsideArchive,
+                  canDeleteSelection: isInsideArchive ? supportsInPlaceArchiveMutation && hasArchiveSelection : hasFileSystemSelection,
+                  canShowSelectedItemProperties: !selection.realItems.isEmpty,
+                  canCalculateSelectionHashes: selection.singleFileSystemFile != nil,
+                  canGoUp: commandState.canGoUp,
+                  canSelectVisibleItems: commandState.canSelectVisibleItems,
+                  canDeselectSelection: commandState.canDeselectSelection,
+                  canShowFoldersHistory: commandState.canShowFoldersHistory)
+    }
+
     func allows(_ command: FileManagerPaneCommand) -> Bool {
         switch command {
         case .openSelection:
@@ -52,6 +91,19 @@ extension FileManagerPaneCapabilities {
             canCreateFolderHere
         case .showSelectedItemProperties:
             canShowSelectedItemProperties
+        }
+    }
+
+    private static func canOpenOutside(_ item: FileManagerPaneItem?) -> Bool {
+        guard let item else { return false }
+
+        switch item {
+        case .parent:
+            return false
+        case .filesystem:
+            return true
+        case let .archive(archiveItem):
+            return !archiveItem.isDirectory
         }
     }
 }
@@ -104,12 +156,16 @@ struct FileManagerPaneSnapshot {
 @MainActor
 extension FileManagerPaneController {
     var paneCapabilities: FileManagerPaneCapabilities {
-        makePaneCapabilities(selectedSingleFileSystemFile: selectedSingleFileSystemFile())
+        makePaneCapabilities(selection: paneSelectionState,
+                             commandState: paneCommandState)
     }
 
     var snapshot: FileManagerPaneSnapshot {
-        let selectedSingleFileSystemFile = selectedSingleFileSystemFile()
-        let capabilities = makePaneCapabilities(selectedSingleFileSystemFile: selectedSingleFileSystemFile)
+        let selection = paneSelectionState
+        let commandState = paneCommandState
+        let selectedSingleFileSystemFile = selection.singleFileSystemFile
+        let capabilities = makePaneCapabilities(selection: selection,
+                                                commandState: commandState)
 
         return FileManagerPaneSnapshot(
             currentDirectoryURL: currentDirectoryURL,
@@ -120,10 +176,10 @@ extension FileManagerPaneController {
             currentArchiveDestinationDisplayPath: currentArchiveDestinationDisplayPath(),
             recentDirectoryHistory: recentDirectoryHistory(),
             acceptsFilePaste: !isVirtualLocation || supportsInPlaceArchiveMutation,
-            selectedArchiveCandidateURL: selectedArchiveCandidateURL(),
-            selection: FileManagerPaneSelectionSnapshot(fileURLs: selectedFileURLs(),
+            selectedArchiveCandidateURL: selection.archiveCandidateURL,
+            selection: FileManagerPaneSelectionSnapshot(fileURLs: selection.fileURLs,
                                                         displayedNames: selectedItemNames(limit: 5),
-                                                        realItemCount: selectedRealItemCount),
+                                                        realItemCount: selection.realItems.count),
             selectedSingleFileSystemFile: selectedSingleFileSystemFile.map {
                 FileManagerPaneSelectedFileSnapshot(url: $0.url,
                                                     name: $0.name)
@@ -136,25 +192,10 @@ extension FileManagerPaneController {
         )
     }
 
-    private func makePaneCapabilities(selectedSingleFileSystemFile: FileSystemItem?) -> FileManagerPaneCapabilities {
-        FileManagerPaneCapabilities(canOpenSelection: canOpenSelection(),
-                                    canOpenArchiveInViewer: selectedArchiveCandidateURL() != nil,
-                                    canOpenSelectionInside: canOpenSelectionInside(),
-                                    canOpenSelectionOutside: canOpenSelectionOutside(),
-                                    canAddSelectedItemsToArchive: canAddSelectedItemsToArchive(),
-                                    canExtractSelectionOrArchive: canExtractSelectionOrArchive(),
-                                    canTestArchiveSelection: canTestArchiveSelection(),
-                                    canCopySelection: canCopySelection(),
-                                    canMoveSelection: canMoveSelection(),
-                                    canRenameSelection: canRenameSelection(),
-                                    canCreateFolderHere: canCreateFolderHere(),
-                                    canCreateFileHere: canCreateFileHere(),
-                                    canDeleteSelection: canDeleteSelection(),
-                                    canShowSelectedItemProperties: canShowSelectedItemProperties(),
-                                    canCalculateSelectionHashes: selectedSingleFileSystemFile != nil,
-                                    canGoUp: canGoUp(),
-                                    canSelectVisibleItems: canSelectVisibleItems(),
-                                    canDeselectSelection: canDeselectSelection(),
-                                    canShowFoldersHistory: canShowFoldersHistory())
+    private func makePaneCapabilities(selection: FileManagerPaneSelectionState,
+                                      commandState: FileManagerPaneCommandState) -> FileManagerPaneCapabilities
+    {
+        FileManagerPaneCapabilities(selection: selection,
+                                    commandState: commandState)
     }
 }

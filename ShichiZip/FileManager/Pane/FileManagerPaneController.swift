@@ -712,116 +712,21 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     // MARK: - Command Capabilities
 
     var canQuickLookSelection: Bool {
-        !selectedRealPaneItems().isEmpty
+        !paneSelectionState.realItems.isEmpty
     }
 
-    func canAddSelectedItemsToArchive() -> Bool {
-        if isInsideArchive {
-            return supportsInPlaceArchiveMutation
-        }
-        return !selectedFileSystemItems().isEmpty
-    }
-
-    func canCreateFolderHere() -> Bool {
-        if isInsideArchive {
-            return supportsInPlaceArchiveMutation
-        }
-        return true
-    }
-
-    func canCopySelection() -> Bool {
-        if isInsideArchive {
-            return !selectedArchiveItems().isEmpty
-        }
-        return !selectedFileSystemItems().isEmpty
-    }
-
-    func canMoveSelection() -> Bool {
-        !isInsideArchive && !selectedFileSystemItems().isEmpty
-    }
-
-    func canDeleteSelection() -> Bool {
-        if isInsideArchive {
-            return supportsInPlaceArchiveMutation && !selectedArchiveItems().isEmpty
-        }
-        return !selectedFileSystemItems().isEmpty
-    }
-
-    func canRenameSelection() -> Bool {
-        if isInsideArchive {
-            return supportsInPlaceArchiveMutation && selectedArchiveItems().count == 1
-        }
-        return selectedFileSystemItems().count == 1
-    }
-
-    func canExtractSelectionOrArchive() -> Bool {
-        if isInsideArchive {
-            return !archiveItemsForSelectionOrDisplayedItems().isEmpty
-        }
-        return selectedArchiveCandidateURL() != nil
-    }
-
-    func canTestArchiveSelection() -> Bool {
-        if isInsideArchive {
-            return archiveSession.currentLevel != nil
-        }
-        return selectedArchiveCandidateURL() != nil
-    }
-
-    func canOpenSelection() -> Bool {
-        !selectedPaneItems().isEmpty
-    }
-
-    func canOpenSelectionInside() -> Bool {
-        selectedRealPaneItems().count == 1
-    }
-
-    func canOpenSelectionOutside() -> Bool {
-        guard let item = selectedSingleRealPaneItem() else { return false }
-
-        switch item {
-        case .parent:
-            return false
-        case .filesystem:
-            return true
-        case let .archive(archiveItem):
-            return !archiveItem.isDirectory
-        }
-    }
-
-    func canCreateFileHere() -> Bool {
-        !isInsideArchive
-    }
-
-    func canCalculateSelectionHashes() -> Bool {
-        selectedSingleFileSystemFile() != nil
-    }
-
-    func canShowSelectedItemProperties() -> Bool {
-        !selectedRealPaneItems().isEmpty
-    }
-
-    func canGoUp() -> Bool {
-        isInsideArchive || currentDirectory.path != currentDirectory.deletingLastPathComponent().path
-    }
-
-    func canSelectVisibleItems() -> Bool {
-        let firstSelectableRow = showsParentRow ? 1 : 0
-        return numberOfRows(in: tableView) > firstSelectableRow
-    }
-
-    func canDeselectSelection() -> Bool {
-        !tableView.selectedRowIndexes.isEmpty
-    }
-
-    func canShowFoldersHistory() -> Bool {
-        !recentDirectories.isEmpty
+    var paneCommandState: FileManagerPaneCommandState {
+        FileManagerPaneCommandState(isInsideArchive: isInsideArchive,
+                                    supportsInPlaceArchiveMutation: supportsInPlaceArchiveMutation,
+                                    hasCurrentArchive: archiveSession.currentLevel != nil,
+                                    canGoUp: isInsideArchive || currentDirectory.path != currentDirectory.deletingLastPathComponent().path,
+                                    canSelectVisibleItems: numberOfRows(in: tableView) > (showsParentRow ? 1 : 0),
+                                    canDeselectSelection: !tableView.selectedRowIndexes.isEmpty,
+                                    canShowFoldersHistory: !recentDirectories.isEmpty)
     }
 
     func selectedArchiveCandidateURL() -> URL? {
-        let selectedItems = selectedFileSystemItems()
-        guard selectedItems.count == 1, !selectedItems[0].isDirectory else { return nil }
-        return selectedItems[0].url
+        paneSelectionState.archiveCandidateURL
     }
 
     func sourceArchiveURLForPostProcessing() -> URL? {
@@ -1018,7 +923,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     var selectedRealItemCount: Int {
-        selectedRealPaneItems().count
+        paneSelectionState.realItems.count
     }
 
     // MARK: - Extraction Dialog State
@@ -1062,21 +967,23 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     func selectedItemNames(limit: Int? = nil) -> [String] {
+        let selection = paneSelectionState
         if isInsideArchive {
-            return FileManagerItemPresentation.displayNames(for: selectedArchiveItems(), limit: limit)
+            return FileManagerItemPresentation.displayNames(for: selection.archiveItems, limit: limit)
         }
-        return FileManagerItemPresentation.displayNames(for: selectedFileSystemItems(), limit: limit)
+        return FileManagerItemPresentation.displayNames(for: selection.fileSystemItems, limit: limit)
     }
 
     func extractDialogInfoText(previewItemLimit: Int = 5) -> String {
+        let selection = paneSelectionState
         guard isInsideArchive else {
             return FileManagerItemPresentation.fileSystemItemsInfoText(location: currentLocationDisplayPath,
-                                                                       items: selectedFileSystemItems(),
+                                                                       items: selection.fileSystemItems,
                                                                        previewItemLimit: previewItemLimit)
         }
 
         return FileManagerItemPresentation.archiveItemsInfoText(location: currentLocationDisplayPath,
-                                                                items: archiveItemsForSelectionOrDisplayedItems(),
+                                                                items: selection.archiveItemsForSelectionOrDisplayedItems,
                                                                 previewItemLimit: previewItemLimit,
                                                                 includeSummary: true)
     }
@@ -1154,11 +1061,11 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     // MARK: - File System Selection
 
     func selectedFilePaths() -> [String] {
-        selectedFileSystemItems().map(\.url.path)
+        paneSelectionState.filePaths
     }
 
     func selectedFileURLs() -> [URL] {
-        selectedFileSystemItems().map(\.url.standardizedFileURL)
+        paneSelectionState.fileURLs
     }
 
     // MARK: - File System Navigation
@@ -1302,9 +1209,9 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         }
 
         let selectedSummary: FileManagerItemStatusSummary? = if isInsideArchive {
-            FileManagerItemPresentation.summary(for: selectedArchiveItems())
+            FileManagerItemPresentation.summary(for: paneSelectionState.archiveItems)
         } else {
-            FileManagerItemPresentation.summary(for: selectedFileSystemItems())
+            FileManagerItemPresentation.summary(for: paneSelectionState.fileSystemItems)
         }
 
         statusLabel.stringValue = FileManagerItemPresentation.statusBarText(displayed: displayedSummary,
@@ -1746,43 +1653,41 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
 
     // MARK: - Selection Queries
 
+    var paneSelectionState: FileManagerPaneSelectionState {
+        FileManagerPaneSelectionState(tableModel: tableModel,
+                                      selectedRowIndexes: tableView.selectedRowIndexes)
+    }
+
     private func selectedPaneItems() -> [FileManagerPaneItem] {
-        tableModel.selectedItems(in: tableView.selectedRowIndexes)
+        paneSelectionState.items
     }
 
     private func selectedQuickLookRowsAndItems() -> [(row: Int, item: FileManagerPaneItem)] {
-        tableModel.selectedRowsAndItems(in: tableView.selectedRowIndexes,
-                                        excludingParent: true)
+        paneSelectionState.rowsAndItems(excludingParent: true)
     }
 
     private func selectedRealPaneItems() -> [FileManagerPaneItem] {
-        tableModel.selectedRealItems(in: tableView.selectedRowIndexes)
+        paneSelectionState.realItems
     }
 
     private func selectedSingleRealPaneItem() -> FileManagerPaneItem? {
-        tableModel.selectedSingleRealItem(in: tableView.selectedRowIndexes)
+        paneSelectionState.singleRealItem
     }
 
     func selectedFileSystemItems() -> [FileSystemItem] {
-        tableModel.selectedFileSystemItems(in: tableView.selectedRowIndexes)
-    }
-
-    func selectedSingleFileSystemFile() -> FileSystemItem? {
-        let items = selectedFileSystemItems()
-        guard items.count == 1, !items[0].isDirectory else { return nil }
-        return items[0]
+        paneSelectionState.fileSystemItems
     }
 
     func selectedArchiveItems() -> [ArchiveItem] {
-        tableModel.selectedArchiveItems(in: tableView.selectedRowIndexes)
+        paneSelectionState.archiveItems
     }
 
     private func paneItemsForSelectionOrDisplayedItems() -> [FileManagerPaneItem] {
-        tableModel.paneItemsForSelectionOrDisplayedArchiveItems(in: tableView.selectedRowIndexes)
+        paneSelectionState.paneItemsForSelectionOrDisplayedItems
     }
 
     private func archiveItemsForSelectionOrDisplayedItems() -> [ArchiveItem] {
-        tableModel.archiveItemsForSelectionOrDisplayedItems(in: tableView.selectedRowIndexes)
+        paneSelectionState.archiveItemsForSelectionOrDisplayedItems
     }
 
     // MARK: - Archive Context

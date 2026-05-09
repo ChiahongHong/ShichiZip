@@ -131,6 +131,69 @@ struct FileManagerPaneTableModel {
     }
 }
 
+struct FileManagerPaneSelectionState {
+    let tableModel: FileManagerPaneTableModel
+    let selectedRowIndexes: IndexSet
+
+    var items: [FileManagerPaneItem] {
+        tableModel.selectedItems(in: selectedRowIndexes)
+    }
+
+    var realItems: [FileManagerPaneItem] {
+        tableModel.selectedRealItems(in: selectedRowIndexes)
+    }
+
+    var singleRealItem: FileManagerPaneItem? {
+        tableModel.selectedSingleRealItem(in: selectedRowIndexes)
+    }
+
+    var fileSystemItems: [FileSystemItem] {
+        tableModel.selectedFileSystemItems(in: selectedRowIndexes)
+    }
+
+    var singleFileSystemFile: FileSystemItem? {
+        let items = fileSystemItems
+        guard items.count == 1, !items[0].isDirectory else { return nil }
+        return items[0]
+    }
+
+    var archiveItems: [ArchiveItem] {
+        tableModel.selectedArchiveItems(in: selectedRowIndexes)
+    }
+
+    var paneItemsForSelectionOrDisplayedItems: [FileManagerPaneItem] {
+        tableModel.paneItemsForSelectionOrDisplayedArchiveItems(in: selectedRowIndexes)
+    }
+
+    var archiveItemsForSelectionOrDisplayedItems: [ArchiveItem] {
+        tableModel.archiveItemsForSelectionOrDisplayedItems(in: selectedRowIndexes)
+    }
+
+    var archiveCandidateURL: URL? {
+        guard fileSystemItems.count == 1,
+              let item = fileSystemItems.first,
+              !item.isDirectory
+        else {
+            return nil
+        }
+
+        return item.url
+    }
+
+    var filePaths: [String] {
+        fileSystemItems.map(\.url.path)
+    }
+
+    var fileURLs: [URL] {
+        fileSystemItems.map(\.url.standardizedFileURL)
+    }
+
+    func rowsAndItems(excludingParent: Bool = false) -> [(row: Int, item: FileManagerPaneItem)] {
+        tableModel.selectedRowsAndItems(in: selectedRowIndexes,
+                                        excludingParent: excludingParent)
+    }
+}
+
 @MainActor
 struct FileManagerPaneRoutingContext {
     let leftPane: FileManagerPaneController
