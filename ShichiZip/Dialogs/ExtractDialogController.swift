@@ -197,7 +197,7 @@ final class ExtractDialogController: NSObject {
                 validationContext.resolvedResult = try resultBuilder.buildResult(from: contentController.state)
                 return true
             } catch {
-                szPresentError(error, for: nil)
+                szPresentError(error, for: controller.window)
                 return false
             }
         }

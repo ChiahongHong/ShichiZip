@@ -628,6 +628,16 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
 
     private func performFileOperation(move: Bool) {
         let pane = activePane
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await performFileOperation(move: move,
+                                       from: pane)
+        }
+    }
+
+    private func performFileOperation(move: Bool,
+                                      from pane: FileManagerPaneController) async
+    {
         let snapshot = pane.snapshot
 
         if snapshot.isVirtualLocation {
@@ -637,7 +647,9 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
             }
 
             guard snapshot.capabilities.canCopySelection else { return }
-            guard let unresolvedDestinationTarget = promptForFileOperationDestination(forMove: false, sourcePane: pane) else { return }
+            guard let unresolvedDestinationTarget = await promptForFileOperationDestination(forMove: false,
+                                                                                            sourcePane: pane)
+            else { return }
 
             let destinationTarget: FileOperationDestinationTarget
             do {
@@ -649,20 +661,18 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
 
             switch destinationTarget {
             case let .directory(destURL):
-                Task { @MainActor [weak self] in
-                    guard let self, let parentWindow = window else { return }
-                    do {
-                        let prepared = try pane.prepareSelectedItemExtraction(to: destURL,
-                                                                              overwriteMode: .ask)
-                        try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("fileop.copying"),
-                                                             parentWindow: parentWindow)
-                        { session in
-                            try prepared.perform(session: session)
-                        }
-                        refreshPaneDisplayingDirectory(destURL)
-                    } catch {
-                        showErrorAlert(error)
+                guard let parentWindow = window else { return }
+                do {
+                    let prepared = try pane.prepareSelectedItemExtraction(to: destURL,
+                                                                          overwriteMode: .ask)
+                    try await ArchiveOperationRunner.run(operationTitle: SZL10n.string("fileop.copying"),
+                                                         parentWindow: parentWindow)
+                    { session in
+                        try prepared.perform(session: session)
                     }
+                    refreshPaneDisplayingDirectory(destURL)
+                } catch {
+                    showErrorAlert(error)
                 }
             case .archive:
                 showUnsupportedOperationAlert("Copying items from an open archive directly into another archive is not implemented yet.")
@@ -673,10 +683,13 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
         let sourceURLs = snapshot.selection.fileURLs
         guard !sourceURLs.isEmpty else { return }
 
-        guard let destinationTarget = promptForFileOperationDestination(forMove: move, sourcePane: pane) else { return }
+        guard let destinationTarget = await promptForFileOperationDestination(forMove: move,
+                                                                              sourcePane: pane)
+        else { return }
         guard validateTransferDestination(destinationTarget,
                                           sourceURLs: sourceURLs,
-                                          move: move)
+                                          move: move,
+                                          presentingIn: window)
         else {
             return
         }
@@ -693,23 +706,21 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
         case let .directory(destURL):
             let dragOperation: NSDragOperation = move ? .move : .copy
             let operationTitle = SZL10n.string(move ? "fileop.moving" : "fileop.copying")
-            Task { @MainActor [weak self] in
-                guard let self, let parentWindow = window else { return }
-                do {
-                    try await ArchiveOperationRunner.run(operationTitle: operationTitle,
-                                                         parentWindow: parentWindow)
-                    { session in
-                        try FileOperationFileSystemTransfer.perform(sourceURLs,
-                                                                    to: destURL,
-                                                                    operation: dragOperation,
-                                                                    session: session)
-                    }
-                    refreshAfterFilesystemTransfer(from: pane,
-                                                   to: destURL,
-                                                   operation: dragOperation)
-                } catch {
-                    showErrorAlert(error)
+            guard let parentWindow = window else { return }
+            do {
+                try await ArchiveOperationRunner.run(operationTitle: operationTitle,
+                                                     parentWindow: parentWindow)
+                { session in
+                    try FileOperationFileSystemTransfer.perform(sourceURLs,
+                                                                to: destURL,
+                                                                operation: dragOperation,
+                                                                session: session)
                 }
+                refreshAfterFilesystemTransfer(from: pane,
+                                               to: destURL,
+                                               operation: dragOperation)
+            } catch {
+                showErrorAlert(error)
             }
         case let .archive(archiveURL, subdir):
             performArchiveDestinationTransfer(sourceURLs,
@@ -825,7 +836,7 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
     }
 
     private func promptForFileOperationDestination(forMove move: Bool,
-                                                   sourcePane: FileManagerPaneController) -> FileOperationDestinationTarget?
+                                                   sourcePane: FileManagerPaneController) async -> FileOperationDestinationTarget?
     {
         let sourceSnapshot = sourcePane.snapshot
         let defaultPath = suggestedDestinationPath(for: sourcePane)
@@ -839,15 +850,17 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
             guard let self else { return false }
             return validateTransferDestination(destinationTarget,
                                                sourceURLs: sourceSnapshot.selection.fileURLs,
-                                               move: move)
+                                               move: move,
+                                               presentingIn: nil)
         }
 
-        return prompt.run()
+        return await prompt.run(for: window)
     }
 
     private func validateTransferDestination(_ destinationTarget: FileOperationDestinationTarget,
                                              sourceURLs: [URL],
-                                             move: Bool) -> Bool
+                                             move: Bool,
+                                             presentingIn presentingWindow: NSWindow?) -> Bool
     {
         guard let conflict = FileManagerTransferDestinationValidation.conflict(sourceURLs: sourceURLs,
                                                                                destinationTarget: destinationTarget)
@@ -857,7 +870,7 @@ class FileManagerWindowController: NSWindowController, NSWindowDelegate, NSUserI
 
         FileManagerTransferDestinationValidation.present(conflict,
                                                          operation: move ? .move : .copy,
-                                                         in: window)
+                                                         in: presentingWindow)
         return false
     }
 

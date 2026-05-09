@@ -377,7 +377,11 @@ static uint32_t SZDialogRoundUpByteCountToGB(uint64_t byteCount) {
                                                                            accessoryView:nil
                                                                  preferredFirstResponder:nil
                                                                        cancelButtonIndex:0];
-    [controller runModal];
+    if (window) {
+        [controller beginSheetModalForWindow:window completionHandler:^(__unused NSInteger selectedButtonIndex) { }];
+    } else {
+        [controller runModal];
+    }
 }
 
 + (void)presentMessageWithStyle:(SZDialogStyle)style

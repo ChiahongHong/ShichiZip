@@ -60,6 +60,8 @@ final class FileManagerTransferUITests: ShichiZipUITestCase {
         let destinationField = app.comboBoxes.matching(identifier: "fileOperation.destinationPath").firstMatch
         XCTAssertTrue(destinationField.waitForExistence(timeout: 5),
                       "File operation destination field should appear")
+        XCTAssertTrue(app.sheets.firstMatch.waitForExistence(timeout: 5),
+                      "File operation destination dialog should be presented as a sheet")
         destinationField.click()
         destinationField.selectAll()
         destinationField.pasteText(destinationPath)

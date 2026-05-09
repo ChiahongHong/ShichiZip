@@ -68,12 +68,15 @@ enum FileManagerArchiveCommandSupport {
         guard snapshot.capabilities.canExtractSelectionOrArchive else { return }
 
         if snapshot.isVirtualLocation {
-            copyArchiveItemsFromOpenArchive(from: activePane,
-                                            snapshot: snapshot,
-                                            inactivePaneSnapshot: inactivePaneSnapshot,
-                                            parentWindow: parentWindow,
-                                            refreshPaneDisplayingDirectory: refreshPaneDisplayingDirectory,
-                                            showError: showError)
+            Task { @MainActor [weak activePane, weak parentWindow] in
+                guard let activePane else { return }
+                await copyArchiveItemsFromOpenArchive(from: activePane,
+                                                      snapshot: snapshot,
+                                                      inactivePaneSnapshot: inactivePaneSnapshot,
+                                                      parentWindow: parentWindow,
+                                                      refreshPaneDisplayingDirectory: refreshPaneDisplayingDirectory,
+                                                      showError: showError)
+            }
             return
         }
 
@@ -125,7 +128,7 @@ enum FileManagerArchiveCommandSupport {
                                                         inactivePaneSnapshot: FileManagerPaneSnapshot?,
                                                         parentWindow: NSWindow?,
                                                         refreshPaneDisplayingDirectory: @escaping @MainActor (URL) -> Void,
-                                                        showError: @escaping @MainActor (Error) -> Void)
+                                                        showError: @escaping @MainActor (Error) -> Void) async
     {
         let prompt = FileOperationDestinationPrompt(move: false,
                                                     sourcePane: activePane,
@@ -136,7 +139,7 @@ enum FileManagerArchiveCommandSupport {
             true
         }
 
-        guard let unresolvedDestinationTarget = prompt.run() else { return }
+        guard let unresolvedDestinationTarget = await prompt.run(for: parentWindow) else { return }
 
         let destinationTarget: FileOperationDestinationTarget
         do {
@@ -148,20 +151,16 @@ enum FileManagerArchiveCommandSupport {
 
         switch destinationTarget {
         case let .directory(destinationURL):
-            Task { @MainActor [weak activePane, weak parentWindow] in
-                guard let activePane,
-                      let parentWindow
-                else { return }
+            guard let parentWindow else { return }
 
-                do {
-                    let prepared = try activePane.prepareExtraction(to: destinationURL,
-                                                                    overwriteMode: .ask)
-                    try await copyPreparedArchiveItems(prepared,
-                                                       parentWindow: parentWindow)
-                    refreshPaneDisplayingDirectory(destinationURL)
-                } catch {
-                    showError(error)
-                }
+            do {
+                let prepared = try activePane.prepareExtraction(to: destinationURL,
+                                                                overwriteMode: .ask)
+                try await copyPreparedArchiveItems(prepared,
+                                                   parentWindow: parentWindow)
+                refreshPaneDisplayingDirectory(destinationURL)
+            } catch {
+                showError(error)
             }
         case .archive:
             szPresentMessage(title: SZL10n.string("app.fileManager.operationNotAvailable"),

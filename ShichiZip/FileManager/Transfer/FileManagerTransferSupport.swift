@@ -1469,67 +1469,66 @@ final class FileOperationDestinationPrompt {
         self.validateDestination = validateDestination
     }
 
-    func run() -> FileOperationDestinationTarget? {
+    func run(for parentWindow: NSWindow?) async -> FileOperationDestinationTarget? {
         let title = move ? SZL10n.string("toolbar.move") : SZL10n.string("toolbar.copy")
         let actionTitle = move ? SZL10n.string("toolbar.move") : SZL10n.string("toolbar.copy")
         let labelTitle = move ? SZL10n.string("fileop.moveTo") : SZL10n.string("fileop.copyTo")
         let historyEntries = FileOperationDestinationHistory.entries()
+        let sourcePane = sourcePane
+        let validateDestination = validateDestination
+        var resolvedDestinationTarget: FileOperationDestinationTarget?
 
-        while true {
-            let pathField = NSComboBox(frame: NSRect(x: 0, y: 0, width: 260, height: 26))
-            pathField.isEditable = true
-            pathField.usesDataSource = false
-            pathField.completes = false
-            pathField.addItems(withObjectValues: historyEntries)
-            pathField.stringValue = defaultPath
-            pathField.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            pathField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            pathField.setAccessibilityIdentifier("fileOperation.destinationPath")
+        let pathField = NSComboBox(frame: NSRect(x: 0, y: 0, width: 260, height: 26))
+        pathField.isEditable = true
+        pathField.usesDataSource = false
+        pathField.completes = false
+        pathField.addItems(withObjectValues: historyEntries)
+        pathField.stringValue = defaultPath
+        pathField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        pathField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        pathField.setAccessibilityIdentifier("fileOperation.destinationPath")
 
-            let browseButton = NSButton(title: SZL10n.string("compress.browse"), target: nil, action: nil)
-            browseButton.bezelStyle = .rounded
-            browseButton.setContentHuggingPriority(.required, for: .horizontal)
-            browseButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-            browseButton.setAccessibilityIdentifier("fileOperation.browseButton")
+        let browseButton = NSButton(title: SZL10n.string("compress.browse"), target: nil, action: nil)
+        browseButton.bezelStyle = .rounded
+        browseButton.setContentHuggingPriority(.required, for: .horizontal)
+        browseButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        browseButton.setAccessibilityIdentifier("fileOperation.browseButton")
 
-            let label = NSTextField(labelWithString: labelTitle)
-            label.font = .systemFont(ofSize: 12, weight: .medium)
-            label.setContentHuggingPriority(.required, for: .vertical)
+        let label = NSTextField(labelWithString: labelTitle)
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.setContentHuggingPriority(.required, for: .vertical)
 
-            let inputRow = NSStackView(views: [pathField, browseButton])
-            inputRow.orientation = .horizontal
-            inputRow.alignment = .centerY
-            inputRow.spacing = 8
-            inputRow.distribution = .fill
+        let inputRow = NSStackView(views: [pathField, browseButton])
+        inputRow.orientation = .horizontal
+        inputRow.alignment = .centerY
+        inputRow.spacing = 8
+        inputRow.distribution = .fill
 
-            let stack = NSStackView(views: [label, inputRow])
-            stack.orientation = .vertical
-            stack.alignment = .leading
-            stack.spacing = 6
-            stack.translatesAutoresizingMaskIntoConstraints = false
-            pathField.widthAnchor.constraint(greaterThanOrEqualToConstant: 240).isActive = true
+        let stack = NSStackView(views: [label, inputRow])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        pathField.widthAnchor.constraint(greaterThanOrEqualToConstant: 240).isActive = true
 
-            let controller = SZModalDialogController(style: .informational,
-                                                     title: title,
-                                                     message: infoText,
-                                                     buttonTitles: [SZL10n.string("common.cancel"), actionTitle],
-                                                     accessoryView: stack,
-                                                     preferredFirstResponder: pathField,
-                                                     cancelButtonIndex: 0)
+        let controller = SZModalDialogController(style: .informational,
+                                                 title: title,
+                                                 message: infoText,
+                                                 buttonTitles: [SZL10n.string("common.cancel"), actionTitle],
+                                                 accessoryView: stack,
+                                                 preferredFirstResponder: pathField,
+                                                 cancelButtonIndex: 0)
 
-            let windowBoundPicker = FileOperationDestinationPicker(ownerWindow: controller.window,
-                                                                   pathField: pathField,
-                                                                   baseDirectory: sourcePane.currentDirectoryURL)
-            destinationPicker = windowBoundPicker
-            browseButton.target = windowBoundPicker
-            browseButton.action = #selector(FileOperationDestinationPicker.browse(_:))
+        let windowBoundPicker = FileOperationDestinationPicker(ownerWindow: controller.window,
+                                                               pathField: pathField,
+                                                               baseDirectory: sourcePane.currentDirectoryURL)
+        destinationPicker = windowBoundPicker
+        browseButton.target = windowBoundPicker
+        browseButton.action = #selector(FileOperationDestinationPicker.browse(_:))
 
-            defer {
-                destinationPicker = nil
-            }
-
-            guard controller.runModal() == 1 else {
-                return nil
+        controller.shouldFinishHandler = { buttonIndex in
+            guard buttonIndex == 1 else {
+                return true
             }
 
             let enteredPath = pathField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1539,14 +1538,28 @@ final class FileOperationDestinationPrompt {
                                                                                            relativeTo: sourcePane.currentDirectoryURL,
                                                                                            createDirectoryIfNeeded: false)
                 guard validateDestination(destinationTarget) else {
-                    continue
+                    return false
                 }
-                FileOperationDestinationHistory.record(destinationTarget.displayPath)
-                return destinationTarget
+                resolvedDestinationTarget = destinationTarget
+                return true
             } catch {
-                // This prompt reopens in a retry loop, so avoid stacking the error beneath it.
-                szPresentError(error, for: nil)
+                szPresentError(error, for: controller.window)
+                return false
             }
         }
+
+        defer {
+            controller.shouldFinishHandler = nil
+            destinationPicker = nil
+        }
+
+        guard await controller.modalResult(for: parentWindow) == 1,
+              let destinationTarget = resolvedDestinationTarget
+        else {
+            return nil
+        }
+
+        FileOperationDestinationHistory.record(destinationTarget.displayPath)
+        return destinationTarget
     }
 }
