@@ -19,16 +19,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     private var statusLabel: NSTextField!
     private var listViewCoordinator: FileManagerPaneListViewCoordinator!
     private var menuCoordinator: FileManagerPaneMenuCoordinator!
-    private var settingsObserver: NSObjectProtocol?
-    private var viewPreferencesObserver: NSObjectProtocol?
-    private var archiveChangeObserver: NSObjectProtocol?
-    private var languageObserver: NSObjectProtocol?
-    private var liveScrollStartObserver: NSObjectProtocol?
-    private var liveScrollEndObserver: NSObjectProtocol?
-    private var columnDidMoveObserver: NSObjectProtocol?
-    private var columnDidResizeObserver: NSObjectProtocol?
-    private var isLiveScrolling = false
-    private var pendingAutoRefresh = false
+    private var eventCoordinator: FileManagerPaneEventCoordinator?
     private let iconProvider = FileManagerPaneIconProvider(iconSize: NSSize(width: 16, height: 16))
     private let transferCoordinator = FileManagerPaneTransferCoordinator()
     private var iconSize: NSSize {
@@ -47,66 +38,75 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         currentDirectory
     }
 
-    private lazy var directoryCoordinator = FileManagerPaneDirectoryCoordinator(
-        isViewLoaded: { [weak self] in
-            self?.isViewLoaded == true
-        },
-        isInsideArchive: { [weak self] in
-            self?.isInsideArchive == true
-        },
-        showsParentRow: { [weak self] in
-            self?.showsParentRow == true
-        },
-        selectedFileSystemItems: { [weak self] in
-            self?.selectedFileSystemItems() ?? []
-        },
-        focusedFileSystemItemPath: { [weak self] in
-            guard let self,
-                  let focusedItem = paneItem(at: tableView.selectedRow),
-                  case let .filesystem(item) = focusedItem
-            else {
-                return nil
-            }
-            return item.url.standardizedFileURL.path
-        },
-        clearSuspendedState: { [weak self] in
-            self?.clearSuspendedState()
-        },
-        updatePathField: { [weak self] in
-            self?.updatePathField()
-        },
-        updateStatusBar: { [weak self] in
-            self?.updateStatusBar()
-        },
-        updateTableColumns: { [weak self] in
-            self?.updateTableColumnsForCurrentLocation()
-        },
-        sortCurrentItems: { [weak self] in
-            self?.sortCurrentItemsByCurrentListViewDescriptors()
-        },
-        reloadTableData: { [weak self] in
-            self?.tableView.reloadData()
-        },
-        focusFileList: { [weak self] in
-            self?.focusFileList()
-        },
-        selectRows: { [weak self] rows in
-            self?.tableView.selectRowIndexes(rows,
-                                             byExtendingSelection: false)
-        },
-        deselectRows: { [weak self] in
-            self?.tableView.deselectAll(nil)
-        },
-        scrollRowToVisible: { [weak self] row in
-            self?.tableView.scrollRowToVisible(row)
-        },
-        showError: { [weak self] error in
-            self?.showErrorAlert(error)
-        },
-        directoryDidChange: { [weak self] in
-            self?.autoRefreshIfPossible()
-        },
-    )
+    private var directoryCoordinatorStorage: FileManagerPaneDirectoryCoordinator?
+    private var directoryCoordinator: FileManagerPaneDirectoryCoordinator {
+        if let directoryCoordinatorStorage {
+            return directoryCoordinatorStorage
+        }
+
+        let coordinator = FileManagerPaneDirectoryCoordinator(
+            isViewLoaded: { [weak self] in
+                self?.isViewLoaded == true
+            },
+            isInsideArchive: { [weak self] in
+                self?.isInsideArchive == true
+            },
+            showsParentRow: { [weak self] in
+                self?.showsParentRow == true
+            },
+            selectedFileSystemItems: { [weak self] in
+                self?.selectedFileSystemItems() ?? []
+            },
+            focusedFileSystemItemPath: { [weak self] in
+                guard let self,
+                      let focusedItem = paneItem(at: tableView.selectedRow),
+                      case let .filesystem(item) = focusedItem
+                else {
+                    return nil
+                }
+                return item.url.standardizedFileURL.path
+            },
+            clearSuspendedState: { [weak self] in
+                self?.clearSuspendedState()
+            },
+            updatePathField: { [weak self] in
+                self?.updatePathField()
+            },
+            updateStatusBar: { [weak self] in
+                self?.updateStatusBar()
+            },
+            updateTableColumns: { [weak self] in
+                self?.updateTableColumnsForCurrentLocation()
+            },
+            sortCurrentItems: { [weak self] in
+                self?.sortCurrentItemsByCurrentListViewDescriptors()
+            },
+            reloadTableData: { [weak self] in
+                self?.tableView.reloadData()
+            },
+            focusFileList: { [weak self] in
+                self?.focusFileList()
+            },
+            selectRows: { [weak self] rows in
+                self?.tableView.selectRowIndexes(rows,
+                                                 byExtendingSelection: false)
+            },
+            deselectRows: { [weak self] in
+                self?.tableView.deselectAll(nil)
+            },
+            scrollRowToVisible: { [weak self] row in
+                self?.tableView.scrollRowToVisible(row)
+            },
+            showError: { [weak self] error in
+                self?.showErrorAlert(error)
+            },
+            directoryDidChange: { [weak self] in
+                self?.autoRefreshIfPossible()
+            },
+        )
+        directoryCoordinatorStorage = coordinator
+        return coordinator
+    }
 
     private let archiveSession = FileManagerArchiveSession()
     private var archiveCoordinatorStorage: FileManagerPaneArchiveCoordinator?
@@ -194,40 +194,17 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     // MARK: - Lifecycle
 
     isolated deinit {
-        if let settingsObserver {
-            NotificationCenter.default.removeObserver(settingsObserver)
-        }
-        if let viewPreferencesObserver {
-            NotificationCenter.default.removeObserver(viewPreferencesObserver)
-        }
-        if let archiveChangeObserver {
-            NotificationCenter.default.removeObserver(archiveChangeObserver)
-        }
-        if let languageObserver {
-            NotificationCenter.default.removeObserver(languageObserver)
-        }
-        if let liveScrollStartObserver {
-            NotificationCenter.default.removeObserver(liveScrollStartObserver)
-        }
-        if let liveScrollEndObserver {
-            NotificationCenter.default.removeObserver(liveScrollEndObserver)
-        }
-        if let columnDidMoveObserver {
-            NotificationCenter.default.removeObserver(columnDidMoveObserver)
-        }
-        if let columnDidResizeObserver {
-            NotificationCenter.default.removeObserver(columnDidResizeObserver)
-        }
+        eventCoordinator?.tearDown()
 
-        directoryCoordinator.tearDown()
+        directoryCoordinatorStorage?.tearDown()
         cancelPendingArchiveRefresh()
 
-        let preservedTemporaryDirectories = preserveNestedArchiveTemporaryDirectories()
-        let didCloseAllArchives = closeAllArchives(showError: false)
+        let preservedTemporaryDirectories = archiveSession.preserveNestedTemporaryDirectories()
+        let didCloseAllArchives = archiveCoordinatorStorage?.closeAll(showError: false) ?? !archiveSession.isInsideArchive
         if didCloseAllArchives {
-            archiveCoordinator.cleanupAllTemporaryDirectories()
+            archiveSession.cleanupAllTemporaryDirectories()
         } else {
-            preserveRemainingTemporaryDirectories(preservedTemporaryDirectories)
+            archiveSession.preserveRemainingTemporaryDirectories(preservedTemporaryDirectories)
         }
     }
 
@@ -239,9 +216,7 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
                                            listRowHeight: listRowHeight)
 
         connectPaneView(paneView)
-        installTableColumnObservers()
-        installScrollObservers()
-        installModelObservers()
+        installEventCoordinator()
         applyFileManagerSettings()
 
         view = paneView
@@ -319,111 +294,32 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         tableView.setDraggingSourceOperationMask(.copy, forLocal: false)
     }
 
-    private func installTableColumnObservers() {
-        columnDidMoveObserver = NotificationCenter.default.addObserver(
-            forName: NSTableView.columnDidMoveNotification,
-            object: tableView,
-            queue: .main,
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
+    private func installEventCoordinator() {
+        eventCoordinator = FileManagerPaneEventCoordinator(
+            tableView: tableView,
+            scrollView: scrollView,
+            columnLayoutDidChange: { [weak self] in
                 self?.handleTableColumnLayoutDidChange()
-            }
-        }
-
-        columnDidResizeObserver = NotificationCenter.default.addObserver(
-            forName: NSTableView.columnDidResizeNotification,
-            object: tableView,
-            queue: .main,
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.handleTableColumnLayoutDidChange()
-            }
-        }
-    }
-
-    private func installScrollObservers() {
-        liveScrollStartObserver = NotificationCenter.default.addObserver(
-            forName: NSScrollView.willStartLiveScrollNotification,
-            object: scrollView,
-            queue: .main,
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.isLiveScrolling = true
-            }
-        }
-
-        liveScrollEndObserver = NotificationCenter.default.addObserver(
-            forName: NSScrollView.didEndLiveScrollNotification,
-            object: scrollView,
-            queue: .main,
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.isLiveScrolling = false
-
-                guard self.pendingAutoRefresh else { return }
-                self.pendingAutoRefresh = false
-                self.autoRefreshCurrentDirectoryIfNeeded()
-            }
-        }
-    }
-
-    private func installModelObservers() {
-        settingsObserver = NotificationCenter.default.addObserver(
-            forName: .szSettingsDidChange,
-            object: nil,
-            queue: .main,
-        ) { [weak self] notification in
-            let settingsKey = (notification.userInfo?["key"] as? String)
-                .flatMap(SZSettingsKey.init(rawValue:))
-            MainActor.assumeIsolated {
-                guard let settingsKey else { return }
+            },
+            settingsDidChange: { [weak self] settingsKey in
                 self?.handleSettingsDidChange(settingsKey)
-            }
-        }
-
-        viewPreferencesObserver = NotificationCenter.default.addObserver(
-            forName: .fileManagerViewPreferencesDidChange,
-            object: nil,
-            queue: .main,
-        ) { [weak self] notification in
-            let shouldResetListViewPreferences = notification.userInfo?[FileManagerViewPreferences.listViewPreferencesResetUserInfoKey] as? Bool == true
-            MainActor.assumeIsolated {
-                if shouldResetListViewPreferences {
-                    self?.listViewCoordinator.resetForCurrentLocation()
-                } else {
-                    self?.reloadPresentedValues()
-                }
-            }
-        }
-
-        archiveChangeObserver = NotificationCenter.default.addObserver(
-            forName: .fileManagerArchiveDidChange,
-            object: nil,
-            queue: .main,
-        ) { [weak self] notification in
-            let change = FileManagerArchiveChange(notification: notification)
-            MainActor.assumeIsolated {
-                guard let self,
-                      let change
-                else {
-                    return
-                }
-                self.handlePublishedArchiveChange(change)
-            }
-        }
-
-        languageObserver = NotificationCenter.default.addObserver(
-            forName: .szLanguageDidChange,
-            object: nil,
-            queue: .main,
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.refreshColumnTitles()
-                self?.refreshContextMenu()
-                self?.updateStatusBar()
-            }
-        }
+            },
+            resetListViewPreferences: { [weak self] in
+                self?.listViewCoordinator.resetForCurrentLocation()
+            },
+            reloadPresentedValues: { [weak self] in
+                self?.reloadPresentedValues()
+            },
+            archiveDidChange: { [weak self] change in
+                self?.handlePublishedArchiveChange(change)
+            },
+            languageDidChange: { [weak self] in
+                self?.handleLanguageDidChange()
+            },
+            autoRefreshCurrentDirectoryIfNeeded: { [weak self] in
+                self?.autoRefreshCurrentDirectoryIfNeeded()
+            },
+        )
     }
 
     // MARK: - Navigation
@@ -501,13 +397,11 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         guard FileManagerViewPreferences.autoRefreshEnabled else { return }
         guard !isInsideArchive else { return }
         guard directoryCoordinator.consumeDirectoryChange() else { return }
-        guard !isLiveScrolling else {
-            pendingAutoRefresh = true
+        guard let eventCoordinator else {
+            autoRefreshCurrentDirectoryIfNeeded()
             return
         }
-
-        pendingAutoRefresh = false
-        autoRefreshCurrentDirectoryIfNeeded()
+        eventCoordinator.autoRefreshWhenPossible()
     }
 
     func reloadPresentedValues() {
@@ -1169,6 +1063,12 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
         updateStatusBar()
     }
 
+    private func handleLanguageDidChange() {
+        refreshColumnTitles()
+        refreshContextMenu()
+        updateStatusBar()
+    }
+
     // MARK: - Quick Look Presentation
 
     private func quickLookSourceInfo(forRow row: Int,
@@ -1685,14 +1585,6 @@ class FileManagerPaneController: NSViewController, NSTableViewDataSource, NSTabl
     private func reactivatePane() {
         guard isSuspended else { return }
         loadDirectory(currentDirectory, showError: true)
-    }
-
-    private func preserveNestedArchiveTemporaryDirectories() -> [URL] {
-        archiveCoordinator.preserveNestedTemporaryDirectories()
-    }
-
-    private func preserveRemainingTemporaryDirectories(_ urls: [URL]) {
-        archiveCoordinator.preserveRemainingTemporaryDirectories(urls)
     }
 
     // MARK: - Archive Reloads And Change Propagation

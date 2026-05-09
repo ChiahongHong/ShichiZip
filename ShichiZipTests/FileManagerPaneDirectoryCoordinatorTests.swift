@@ -82,6 +82,29 @@ final class FileManagerPaneDirectoryCoordinatorTests: XCTestCase {
                        hostDirectory.standardizedFileURL)
     }
 
+    func testPaneDeinitWithoutLoadedViewDoesNotInitializeCoordinators() {
+        weak var weakPane: FileManagerPaneController?
+
+        autoreleasepool {
+            let pane = FileManagerPaneController()
+            weakPane = pane
+        }
+
+        XCTAssertNil(weakPane)
+    }
+
+    func testPaneDeinitAfterLoadingFileSystemViewDoesNotInitializeArchiveCoordinator() {
+        weak var weakPane: FileManagerPaneController?
+
+        autoreleasepool {
+            let pane = FileManagerPaneController()
+            _ = pane.view
+            weakPane = pane
+        }
+
+        XCTAssertNil(weakPane)
+    }
+
     private func makeCoordinator(isViewLoaded: @escaping () -> Bool = { true },
                                  isInsideArchive: @escaping () -> Bool = { false },
                                  showsParentRow: @escaping () -> Bool = { false },
