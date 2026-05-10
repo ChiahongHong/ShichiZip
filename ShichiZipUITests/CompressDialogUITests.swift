@@ -67,6 +67,53 @@ final class CompressDialogUITests: ShichiZipUITestCase {
         XCTAssertTrue(app.state == .runningForeground)
     }
 
+    func testCompressValidationFailureKeepsDialogOpen() throws {
+        let tempDir = try makeTemporaryDirectory(named: "compressValidation")
+        try createTextFile(at: tempDir.appendingPathComponent("data.txt"))
+
+        navigateLeftPane(to: tempDir.path)
+        let table = leftPaneTable
+        XCTAssertTrue(table.waitForExistence(timeout: 10))
+
+        let fileCell = table.cells.staticTexts["data.txt"]
+        XCTAssertTrue(fileCell.waitForExistence(timeout: 5))
+        fileCell.click()
+
+        app.menuBars.menuBarItems["File"].click()
+        app.menuBars.menuBarItems["File"].menus.menuItems["Add"].click()
+
+        let archivePathField = app.comboBoxes.matching(identifier: "compress.archivePath").firstMatch
+        XCTAssertTrue(archivePathField.waitForExistence(timeout: 5))
+
+        let securePasswordField = app.secureTextFields.matching(identifier: "compress.password").firstMatch
+        let plainPasswordField = app.textFields.matching(identifier: "compress.passwordPlain").firstMatch
+        let passwordField = securePasswordField.waitForExistence(timeout: 2) && securePasswordField.isHittable
+            ? securePasswordField
+            : plainPasswordField
+        XCTAssertTrue(passwordField.waitForExistence(timeout: 5))
+        passwordField.click()
+        passwordField.pasteText("one")
+
+        let secureConfirmationField = app.secureTextFields.matching(identifier: "compress.confirmPassword").firstMatch
+        let plainConfirmationField = app.textFields.matching(identifier: "compress.confirmPasswordPlain").firstMatch
+        let confirmationField = secureConfirmationField.waitForExistence(timeout: 2) && secureConfirmationField.isHittable
+            ? secureConfirmationField
+            : plainConfirmationField
+        XCTAssertTrue(confirmationField.waitForExistence(timeout: 5))
+        confirmationField.click()
+        confirmationField.pasteText("two")
+
+        let okButton = app.buttons.matching(identifier: "modal.button.1").firstMatch
+        XCTAssertTrue(okButton.exists)
+        okButton.click()
+
+        let errorTitle = app.staticTexts["Passwords do not match"].firstMatch
+        XCTAssertTrue(errorTitle.waitForExistence(timeout: 5),
+                      "Validation errors should be presented without dismissing the Compress dialog")
+        XCTAssertTrue(archivePathField.exists,
+                      "Compress dialog should remain open after failed validation")
+    }
+
     // MARK: - Compress & Verify via App
 
     /// Compresses multiple files as .7z, opens the resulting archive
