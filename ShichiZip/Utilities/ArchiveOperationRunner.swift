@@ -7,10 +7,12 @@ extension SZOperationSession: @unchecked Sendable {}
 /// SZArchive access is coordinated by callers before being handed to background archive workers.
 extension SZArchive: @unchecked Sendable {}
 
+/// Stored behind `ArchiveOperationResultBox.state`; access is serialized by that lock.
 private struct ArchiveOperationStoredResult<Value>: @unchecked Sendable {
     let result: Result<Value, Error>
 }
 
+/// Crosses from archive worker queues back to the main run-loop bridge; `state` owns synchronization.
 private final class ArchiveOperationResultBox<Value>: @unchecked Sendable {
     private let state = OSAllocatedUnfairLock(initialState: nil as ArchiveOperationStoredResult<Value>?)
 
@@ -35,6 +37,7 @@ private final class ArchiveOperationResultBox<Value>: @unchecked Sendable {
     }
 }
 
+/// Wraps archive work for dispatch queues. Callers coordinate archive/session ownership before dispatch.
 private struct ArchiveOperationWork<Value>: @unchecked Sendable {
     let body: (SZOperationSession) throws -> Value
 

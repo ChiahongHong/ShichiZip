@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 
 /// Represents a file system item for the file manager view
-class FileSystemItem {
+final class FileSystemItem: Sendable {
     static let resourceKeys: [URLResourceKey] = [
         .isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey,
         .contentModificationDateKey, .creationDateKey, .contentAccessDateKey,
@@ -87,5 +87,3 @@ class FileSystemItem {
         Date(timeIntervalSince1970: TimeInterval(timeSpec.tv_sec) + TimeInterval(timeSpec.tv_nsec) / 1_000_000_000)
     }
 }
-
-extension FileSystemItem: @unchecked Sendable {}

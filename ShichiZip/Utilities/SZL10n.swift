@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Centralized lookup for localized UI strings.
 ///
@@ -24,24 +25,19 @@ enum SZL10n {
     /// `.lproj` inside `Resources/Localization` when an override
     /// is active, otherwise falls back to `.main`.
     ///
-    /// Access is guarded by `bundleLock` so lookups remain safe when
+    /// Access is guarded by `bundleStorage` so lookups remain safe when
     /// called from background queues (e.g. error-message construction
     /// in FileManagerArchiveItemWorkflowService, or bridge callbacks).
-    private nonisolated(unsafe) static var _bundle: Bundle = makeBundle()
-    private static let bundleLock = NSLock()
+    private static let bundleStorage = OSAllocatedUnfairLock(initialState: makeBundle())
 
     static var bundle: Bundle {
-        bundleLock.lock()
-        defer { bundleLock.unlock() }
-        return _bundle
+        bundleStorage.withLock { $0 }
     }
 
     /// Reload the bundle after the language preference changes.
     static func reloadBundle() {
         let newBundle = makeBundle()
-        bundleLock.lock()
-        _bundle = newBundle
-        bundleLock.unlock()
+        bundleStorage.withLock { $0 = newBundle }
     }
 
     /// Look up a localized string.  Checks `App.strings` first,

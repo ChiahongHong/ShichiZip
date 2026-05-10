@@ -1,4 +1,5 @@
 import Cocoa
+import os
 
 struct ArchiveExtractionPostProcessResult {
     let movedSourceArchiveToTrash: Bool
@@ -22,13 +23,25 @@ enum ArchiveExtractionPostProcessor {
     }
 }
 
+private enum AppDelegateTestingOverrides {
+    private static let shouldRevealSmartQuickExtractDestinationStorage = OSAllocatedUnfairLock(initialState: nil as Bool?)
+
+    static var shouldRevealSmartQuickExtractDestination: Bool? {
+        get { shouldRevealSmartQuickExtractDestinationStorage.withLock { $0 } }
+        set { shouldRevealSmartQuickExtractDestinationStorage.withLock { $0 = newValue } }
+    }
+}
+
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate, FileManagerDocumentOpenRouting {
     private static let disableSmartQuickExtractRevealEnvironmentKey = "SHICHIZIP_DISABLE_SMART_QUICK_EXTRACT_REVEAL"
     private static let quickActionLogPrefix = "QuickActionTransport"
 
     /// Test-only override for smart quick extract reveal behavior.
-    nonisolated(unsafe) static var testingShouldRevealSmartQuickExtractDestinationOverride: Bool?
+    nonisolated static var testingShouldRevealSmartQuickExtractDestinationOverride: Bool? {
+        get { AppDelegateTestingOverrides.shouldRevealSmartQuickExtractDestination }
+        set { AppDelegateTestingOverrides.shouldRevealSmartQuickExtractDestination = newValue }
+    }
 
     private struct SmartQuickExtractPlan {
         let destinationURL: URL

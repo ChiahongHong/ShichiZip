@@ -1,5 +1,6 @@
 import Foundation
 
+/// Shared across UI and archive worker queues; all mutable state is guarded by `condition`.
 final class FileManagerArchiveOperationGate: @unchecked Sendable {
     final class Lease: @unchecked Sendable {
         private let gate: FileManagerArchiveOperationGate

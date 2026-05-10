@@ -399,6 +399,7 @@ final class FileManagerPaneIconProvider {
     }
 }
 
+/// File-promise completion callbacks cross AppKit and archive worker queues; the handler is invoked exactly once per promise write.
 private final class ArchiveDragPromiseCompletionHandler: @unchecked Sendable {
     private let handler: (Error?) -> Void
 
@@ -515,6 +516,7 @@ final class ArchiveDragPromise: NSObject, NSFilePromiseProviderDelegate {
     }
 }
 
+/// `NSFilePromiseProviderDelegate` callbacks may arrive off-main; promise writes hop back through the main actor and archive gate.
 extension ArchiveDragPromise: @unchecked Sendable {}
 
 final class FileManagerTableView: NSTableView {

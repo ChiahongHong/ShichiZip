@@ -10,9 +10,11 @@ protocol FileManagerExternalTemporaryDirectoryCleaning: AnyObject {
 
 /// Process-wide owner for temp directories that were handed to an external app.
 /// Pane cleanup must not delete these while the external app may still be using them.
+/// Observer state is protected by `cleanupObserversState`; cleanup may be scheduled from AppKit callbacks.
 final class FileManagerExternalTemporaryDirectoryCleanup: FileManagerExternalTemporaryDirectoryCleaning, @unchecked Sendable {
     static let shared = FileManagerExternalTemporaryDirectoryCleanup()
 
+    /// Retained across notification callbacks; observer mutation is confined to `invalidate()` and owner lock updates.
     private final class CleanupObserver: @unchecked Sendable {
         private let notificationCenter: NotificationCenter
         private var observer: NSObjectProtocol?

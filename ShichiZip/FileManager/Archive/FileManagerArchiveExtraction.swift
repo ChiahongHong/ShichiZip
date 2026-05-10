@@ -7,6 +7,7 @@ struct FileManagerArchiveExtractionContext {
     let quarantineSourceArchivePath: String?
 }
 
+/// Prepared extraction work is handed to ArchiveOperationRunner; archive/session access is coordinated by the caller.
 struct FileManagerPreparedExtraction: @unchecked Sendable {
     let archive: SZArchive
     let entryIndices: [NSNumber]

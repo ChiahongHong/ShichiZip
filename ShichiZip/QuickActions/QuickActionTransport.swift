@@ -1,5 +1,15 @@
 import Foundation
+import os
 import Security
+
+private enum QuickActionTransportTestingOverrides {
+    private static let requestDirectoryURLStorage = OSAllocatedUnfairLock(initialState: nil as URL?)
+
+    static var requestDirectoryURL: URL? {
+        get { requestDirectoryURLStorage.withLock { $0 } }
+        set { requestDirectoryURLStorage.withLock { $0 = newValue } }
+    }
+}
 
 enum ShichiZipQuickActionTransport {
     private static let launchHost = "quick-action"
@@ -12,7 +22,10 @@ enum ShichiZipQuickActionTransport {
     private static let requestDirectoryName = "QuickActionRequests"
     private static let staleRequestLifetime: TimeInterval = 24 * 60 * 60
 
-    nonisolated(unsafe) static var testingRequestDirectoryURLOverride: URL?
+    static var testingRequestDirectoryURLOverride: URL? {
+        get { QuickActionTransportTestingOverrides.requestDirectoryURL }
+        set { QuickActionTransportTestingOverrides.requestDirectoryURL = newValue }
+    }
 
     private static var bundleIdentifier: String {
         Bundle.main.bundleIdentifier ?? "<unknown>"
