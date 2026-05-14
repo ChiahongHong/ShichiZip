@@ -12,6 +12,27 @@ The missing 7-Zip derivative intended for macOS.
 - In-archive Quick Look support for previewing files without extracting.
 - Additional macOS-specific features, including stripping resource forks and best-effort integration with Finder.
 
+## Install
+
+Release builds are available on the [Releases](https://github.com/idawnlight/ShichiZip/releases) page. Both arm64 and x86_64 builds for the mainline and Zstandard fork variants are provided.
+
+This app is also available on [Homebrew Cask](https://formulae.brew.sh/cask/shichizip) and [MacPorts](https://ports.macports.org/port/shichizip/details/), but please note MacPorts version is built from source separately and not the same binary provided in releases. You may pick either package manager you prefer:
+
+```sh
+# Homebrew Cask
+brew install --cask shichizip # Mainline Variant
+# MacPorts
+sudo port install shichizip # Mainline Variant
+sudo port install shichizip +zstd # Zstandard Fork Variant
+```
+
+If you want to install the Zstandard fork variant or nightly builds from Homebrew Cask, you need to use [a separate Homebrew Tap](https://github.com/shichizip/homebrew-tap); see the README of that repository for details.
+
+```sh
+brew tap shichizip/tap
+brew install --cask shichizip-zs # Zstandard Fork Variant
+```
+
 ## Build
 
 - Install prerequisites: `brew install xcodegen zig`
