@@ -56,8 +56,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          git -C homebrew-tap status --short -- Casks
-          if git -C homebrew-tap diff --quiet -- Casks; then
+          cask_status="$(git -C homebrew-tap status --porcelain -- Casks)"
+          printf '%s\n' "$cask_status"
+          if [[ -z "$cask_status" ]]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
