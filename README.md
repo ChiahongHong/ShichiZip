@@ -21,6 +21,7 @@ This app is also available on [Homebrew Cask](https://formulae.brew.sh/cask/shic
 ```sh
 # Homebrew Cask
 brew install --cask shichizip # Mainline Variant
+
 # MacPorts
 sudo port install shichizip # Mainline Variant
 sudo port install shichizip +zstd # Zstandard Fork Variant
