@@ -1,8 +1,0 @@
-name: ShichiZip
-
-include:
-  - project/specs/base.yml
-  - project/specs/apps.yml
-  - project/specs/quick-actions.yml
-  - project/specs/schemes.yml
-  - project/specs/unsigned.yml
